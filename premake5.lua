@@ -10,6 +10,20 @@ project "mujoco"
 	targetdir ("bin/" .. outputdir .. "/%{prj.name}")
 	objdir ("bin-int/" .. outputdir .. "/%{prj.name}")
 
+	-- For ccd, create config.h if doesn't already exist (to match cmake)
+	local configHeader = "src/vendor/ccd/src/ccd/config.h"
+	if not os.isfile(configHeader) then
+        print("Generating " .. configHeader)
+		io.writefile(configHeader, [[
+#ifndef __CCD_CONFIG_H__
+#define __CCD_CONFIG_H__
+
+#define CCD_DOUBLE
+
+#endif /* __CCD_CONFIG_H__ */
+        ]])
+    end
+
 	files
 	{
 		"include/mujoco/*.h",
