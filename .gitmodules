@@ -1,0 +1,21 @@
+[submodule "src/vendor/ccd"]
+	path = src/vendor/ccd
+	url = https://github.com/danfis/libccd
+[submodule "src/vendor/lodepng"]
+	path = src/vendor/lodepng
+	url = https://github.com/lvandeve/lodepng
+[submodule "src/vendor/marchingcubecpp"]
+	path = src/vendor/marchingcubecpp
+	url = https://github.com/aparis69/MarchingCubeCpp
+[submodule "src/vendor/qhull"]
+	path = src/vendor/qhull
+	url = https://github.com/qhull/qhull
+[submodule "src/vendor/tinyobjloader"]
+	path = src/vendor/tinyobjloader
+	url = https://github.com/tinyobjloader/tinyobjloader
+[submodule "src/vendor/tinyxml2"]
+	path = src/vendor/tinyxml2
+	url = https://github.com/leethomason/tinyxml2
+[submodule "src/vendor/trianglemeshdistance"]
+	path = src/vendor/trianglemeshdistance
+	url = https://github.com/InteractiveComputerGraphics/TriangleMeshDistance
