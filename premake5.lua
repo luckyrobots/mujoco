@@ -42,6 +42,10 @@ project "mujoco"
 		"src/thread/*.h",
 		"src/thread/*.cc",
 
+		-- Plugins (first-party)
+		"plugin/sdf/*.h",
+		"plugin/sdf/*.cc",
+
 		-- Dependencies (compiled here for now)
 		"src/vendor/ccd/src/*.h",
 		"src/vendor/ccd/src/*.c",
