@@ -49,8 +49,7 @@ project "mujoco"
 		"src/vendor/ccd/src/*.h",
 		"src/vendor/ccd/src/*.c",
 
-		"src/vendor/tinyxml2/tinyxml2.h",
-		"src/vendor/tinyxml2/tinyxml2.cpp",
+		-- Outlined tinyxml2 to Dependencies.lua
 		"src/vendor/tinyobjloader/tiny_obj_loader.h",
 		"src/vendor/tinyobjloader/tiny_obj_loader.cc",
 
