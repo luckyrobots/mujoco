@@ -2,13 +2,12 @@ project "mujoco"
 	kind "StaticLib"
 	language "C++"
 	cppdialect "C++20"
-	cdialect "C11"
-
-	staticruntime "off"
-	warnings "off"
 
 	targetdir ("bin/" .. outputdir .. "/%{prj.name}")
 	objdir ("bin-int/" .. outputdir .. "/%{prj.name}")
+
+	staticruntime "off"
+	warnings "off"
 
 	-- For ccd, create config.h if doesn't already exist (to match cmake)
 	local configHeader = "src/vendor/ccd/src/ccd/config.h"
@@ -101,3 +100,10 @@ project "mujoco"
 		runtime "Release"
 		optimize "speed"
         symbols "off"
+
+	-- Needed for `strnlen`.
+	filter "toolset:msc"
+		cdialect "C11"
+	filter "toolset:gcc or toolset:clang"	
+		cdialect "gnu11"
+
