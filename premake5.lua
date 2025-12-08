@@ -1,3 +1,39 @@
+project "tinyxml2-mujoco"
+	kind "StaticLib"
+	language "C++"
+	cppdialect "C++17"
+    staticruntime "off"
+
+	targetdir ("bin/" .. outputdir .. "/%{prj.name}")
+	objdir ("bin-int/" .. outputdir .. "/%{prj.name}")
+
+	files
+	{
+		"src/vendor/tinyxml2/tinyxml2.cpp",
+		"src/vendor/tinyxml2/tinyxml2.h"
+	}
+
+	includedirs
+	{
+		"src/vendor/tinyxml2"
+	}
+
+	filter "system:windows"
+		systemversion "latest"
+
+	filter "configurations:Debug"
+		runtime "Debug"
+		symbols "on"
+
+	filter "configurations:Release"
+		runtime "Release"
+		optimize "on"
+
+	filter "configurations:Dist"
+		runtime "Release"
+		optimize "on"
+        symbols "off"
+
 project "mujoco"
 	kind "StaticLib"
 	language "C++"
