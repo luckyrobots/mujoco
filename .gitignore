@@ -42,3 +42,5 @@ MUJOCO_LOG.TXT
 bin/
 bin-int/
 *.vcxproj*
+Makefile
+*.make
