@@ -1,39 +1,3 @@
-project "tinyxml2-mujoco"
-	kind "StaticLib"
-	language "C++"
-	cppdialect "C++17"
-    staticruntime "off"
-
-	targetdir ("bin/" .. outputdir .. "/%{prj.name}")
-	objdir ("bin-int/" .. outputdir .. "/%{prj.name}")
-
-	files
-	{
-		"src/vendor/tinyxml2/tinyxml2.cpp",
-		"src/vendor/tinyxml2/tinyxml2.h"
-	}
-
-	includedirs
-	{
-		"src/vendor/tinyxml2"
-	}
-
-	filter "system:windows"
-		systemversion "latest"
-
-	filter "configurations:Debug"
-		runtime "Debug"
-		symbols "on"
-
-	filter "configurations:Release"
-		runtime "Release"
-		optimize "on"
-
-	filter "configurations:Dist"
-		runtime "Release"
-		optimize "on"
-        symbols "off"
-
 project "mujoco"
 	kind "StaticLib"
 	language "C++"
@@ -85,7 +49,8 @@ project "mujoco"
 		"src/vendor/ccd/src/*.h",
 		"src/vendor/ccd/src/*.c",
 
-		-- Outlined tinyxml2 to Dependencies.lua
+		"src/vendor/tinyxml2/tinyxml2.h",
+		"src/vendor/tinyxml2/tinyxml2.cpp",
 		"src/vendor/tinyobjloader/tiny_obj_loader.h",
 		"src/vendor/tinyobjloader/tiny_obj_loader.cc",
 
@@ -137,7 +102,7 @@ project "mujoco"
         symbols "off"
 
 	-- Needed for `strnlen`.
-	filter "toolset:msc"
+	filter "system:windows"
 		cdialect "C11"
 	filter "toolset:gcc or toolset:clang"	
 		cdialect "gnu11"
