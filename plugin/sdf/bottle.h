@@ -11,7 +11,7 @@
 namespace mujoco::plugin::sdf {
 
 struct BottleAttribute {
-  static constexpr int nattribute = 7;
+  static constexpr int nattribute = 8;
   static constexpr const char* names[nattribute] = {
     "body_radius",   // outer body radius
     "body_height",   // body height
@@ -19,11 +19,12 @@ struct BottleAttribute {
     "neck_height",   // neck height
     "clearance",     // inner clearance for cap fit
     "thread_pitch",  // thread pitch (meters per revolution)
-    "thread_depth"   // radial thread depth
+    "thread_depth",  // radial thread depth
+    "sides"          // number of facets for body/neck cross-section (>=3)
   };
   static constexpr mjtNum defaults[nattribute] = {
     0.04, 0.20, 0.03, 0.03, 0.0005,
-    0.01, 0.0015
+    0.01, 0.0015, 64.0
   };
 };
 

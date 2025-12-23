@@ -14,8 +14,27 @@
 namespace mujoco::plugin::sdf {
 namespace {
 
+inline mjtNum radialFacetScale(mjtNum x, mjtNum y, int sides) {
+  sides = std::max(3, sides);
+  mjtNum k = mjPI / sides;
+  mjtNum a = mju_atan2(y, x);
+  mjtNum sector = std::fmod(a + mjPI, 2 * k) - k;
+  return std::cos(k) / std::cos(sector);
+}
+
 inline mjtNum sdCylinder(const mjtNum p[3], mjtNum r, mjtNum h) {
   mjtNum dxz = std::sqrt(p[0]*p[0] + p[1]*p[1]) - r;
+  mjtNum dy = std::abs(p[2]) - h;
+  mjtNum outside = std::sqrt(std::max(dxz, (mjtNum)0) * std::max(dxz, (mjtNum)0) +
+                             std::max(dy, (mjtNum)0) * std::max(dy, (mjtNum)0));
+  mjtNum inside = std::min(std::max(dxz, dy), (mjtNum)0);
+  return outside + inside;
+}
+
+inline mjtNum sdNgonCylinder(const mjtNum p[3], mjtNum r, mjtNum h, int sides) {
+  mjtNum factor = radialFacetScale(p[0], p[1], sides);
+  mjtNum radial = std::sqrt(p[0]*p[0] + p[1]*p[1]);
+  mjtNum dxz = radial - r * factor;
   mjtNum dy = std::abs(p[2]) - h;
   mjtNum outside = std::sqrt(std::max(dxz, (mjtNum)0) * std::max(dxz, (mjtNum)0) +
                              std::max(dy, (mjtNum)0) * std::max(dy, (mjtNum)0));
@@ -50,14 +69,15 @@ inline mjtNum bottleDistance(const mjtNum p[3], const mjtNum* a) {
   mjtNum neckH = a[3] * 0.5;
   mjtNum pitch = mju_max(a[5], (mjtNum)1e-5);
   mjtNum tDepth = a[6];
+  int sides = std::max(3, static_cast<int>(std::lround(a[7])));
 
   // body centered at z=0, neck sits on top (shifted up by bodyH + neckH)
   mjtNum pb[3] = {p[0], p[1], p[2]};
   mjtNum pn[3] = {p[0], p[1], p[2] - (bodyH + neckH)};
 
-  mjtNum dBody = sdCylinder(pb, bodyR, bodyH);
+  mjtNum dBody = sdNgonCylinder(pb, bodyR, bodyH, sides);
 
-  // External thread on neck: modulate radius outward
+  // External thread on neck: modulate radius outward. Neck stays circular.
   mjtNum mod = threadMod(pn, pitch, tDepth, neckH);
   mjtNum dNeck = sdCylinder(pn, neckR + mod, neckH);
 

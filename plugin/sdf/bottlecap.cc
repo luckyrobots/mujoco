@@ -51,9 +51,13 @@ inline mjtNum capDistance(const mjtNum p[3], const mjtNum* a) {
 
   mjtNum outer = sdCylinder(p, R, H);
 
-  mjtNum innerP[3] = {p[0], p[1], p[2] - (H - lipH)};
-  mjtNum mod = threadMod(innerP, pitch, tDepth, H - lipH);
-  mjtNum inner = sdCylinder(innerP, (R - clr) - mod, H - lipH);
+  // Center the inner cavity so threads span the full usable height.
+  // lipH reserves a lip at the top: the cavity height shrinks by lipH,
+  // and the cavity is shifted downward by lipH to leave the top lip solid.
+  mjtNum innerHalfH = mju_max((mjtNum)0, H - lipH);
+  mjtNum innerP[3] = {p[0], p[1], p[2] + lipH};
+  mjtNum mod = threadMod(innerP, pitch, tDepth, innerHalfH);
+  mjtNum inner = sdCylinder(innerP, (R - clr) - mod, innerHalfH);
 
   return std::max(outer, -inner);
 }
