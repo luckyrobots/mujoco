@@ -9,6 +9,8 @@ project "mujoco"
 	staticruntime "off"
 	warnings "off"
 
+	DefaultTargetParams(true)
+
 	-- For ccd, create config.h if doesn't already exist (to match cmake)
 	local configHeader = "src/vendor/ccd/src/ccd/config.h"
 	if not os.isfile(configHeader) then
