@@ -149,9 +149,9 @@ def jac(
   mask = mask[jp.array(m.dof_bodyid)] > 0
 
   offset = point - d.subtree_com[jp.array(m.body_rootid)[body_id]]
-  jacp = jax.vmap(lambda a, b=offset: a[3:] + jp.cross(a[:3], b))(d._impl.cdof)  # pytype: disable=attribute-error
+  jacp = jax.vmap(lambda a, b=offset: a[3:] + jp.cross(a[:3], b))(d.cdof)  # pytype: disable=attribute-error
   jacp = jax.vmap(jp.multiply)(jacp, mask)
-  jacr = jax.vmap(jp.multiply)(d._impl.cdof[:, :3], mask)  # pytype: disable=attribute-error
+  jacr = jax.vmap(jp.multiply)(d.cdof[:, :3], mask)  # pytype: disable=attribute-error
 
   return jacp, jacr
 
@@ -169,8 +169,8 @@ def jac_dot(
   offset = point - d.subtree_com[jp.array(m.body_rootid)[body_id]]
   pvel_lin = d.cvel[body_id][3:] - jp.cross(offset, d.cvel[body_id][:3])
 
-  cdof = d._impl.cdof
-  cdof_dot = d._impl.cdof_dot
+  cdof = d.cdof
+  cdof_dot = d.cdof_dot
 
   # check for quaternion
   jnt_type = m.jnt_type[m.dof_jntid]
@@ -248,6 +248,7 @@ def _getnum(m: Union[Model, mujoco.MjModel], obj: mujoco._enums.mjtObj) -> int:
       mujoco.mjtObj.mjOBJ_NUMERIC: m.nnumeric,
       mujoco.mjtObj.mjOBJ_TUPLE: m.ntuple,
       mujoco.mjtObj.mjOBJ_KEY: m.nkey,
+      mujoco.mjtObj.mjOBJ_FLEX: m.nflex,
   }.get(obj, 0)
 
 
@@ -271,6 +272,7 @@ def _getadr(
       mujoco.mjtObj.mjOBJ_NUMERIC: m.name_numericadr,
       mujoco.mjtObj.mjOBJ_TUPLE: m.name_tupleadr,
       mujoco.mjtObj.mjOBJ_KEY: m.name_keyadr,
+      mujoco.mjtObj.mjOBJ_FLEX: m.name_flexadr,
   }[obj]
 
 

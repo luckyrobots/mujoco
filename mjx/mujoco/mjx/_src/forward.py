@@ -103,6 +103,8 @@ def fwd_velocity(m: Model, d: Data) -> Data:
 @named_scope
 def fwd_actuation(m: Model, d: Data) -> Data:
   """Actuation-dependent computations."""
+  if not isinstance(d._impl, DataJAX):
+    raise ValueError('fwd_actuation requires JAX backend implementation.')
   if not m.nu or m.opt.disableflags & DisableBit.ACTUATION:
     return d.replace(
         act_dot=jp.zeros((m.na,)),
@@ -182,7 +184,7 @@ def fwd_actuation(m: Model, d: Data) -> Data:
       m.actuator_gainprm,
       m.actuator_biastype,
       m.actuator_biasprm,
-      d._impl.actuator_length,
+      d.actuator_length,
       d._impl.actuator_velocity,
       ctrl_act,
       jp.array(m.actuator_lengthrange),
@@ -299,7 +301,7 @@ def _next_activation(m: Model, d: Data, act_dot: jax.Array) -> jax.Array:
 
   def fn(dyntype, dynprm, act, act_dot, actrange):
     if dyntype == DynType.FILTEREXACT:
-      tau = jp.clip(dynprm[0], a_min=mujoco.mjMINVAL)
+      tau = jp.clip(dynprm[0], min=mujoco.mjMINVAL)
       act = act + act_dot * tau * (1 - jp.exp(-m.opt.timestep / tau))
     else:
       act = act + act_dot * m.opt.timestep

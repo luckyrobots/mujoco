@@ -21,6 +21,7 @@
 #include "engine/engine_crossplatform.h"
 #include "engine/engine_memory.h"
 #include "engine/engine_passive.h"
+#include "engine/engine_sleep.h"
 #include "engine/engine_support.h"
 #include "engine/engine_util_blas.h"
 #include "engine/engine_util_errmem.h"
@@ -246,7 +247,7 @@ void mjd_subQuat(const mjtNum qa[4], const mjtNum qb[4], mjtNum Da[9], mjtNum Db
   mju_addToScl(Da_tmp, KK, coef, 9);
 
   if (Da) {
-    mju_copy(Da, Da_tmp, 9);
+    mju_copy9(Da, Da_tmp);
   }
 
   if (Db) {  // Db = -Da^T
@@ -284,7 +285,7 @@ void mjd_quatIntegrate(const mjtNum vel[3], mjtNum scale,
   mjtNum xx = mju_dot3(s, s);
   mjtNum x = mju_sqrt(xx);
 
-  // 4 coefficients: a=cos(x), b=sin(x)/x, c=(1-cos(x))/x^2, d=(x-sin(x))/x^3}
+  // 4 coefficients: a=cos(x), b=sin(x)/x, c=(1-cos(x))/x^2, d=(x-sin(x))/x^3
   mjtNum a = mju_cos(x);
   mjtNum b, c, d;
 
@@ -308,7 +309,7 @@ void mjd_quatIntegrate(const mjtNum vel[3], mjtNum scale,
     if (Dquat)          Dquat[i] = a*eye[i] + b*cross[i] + c*outer[i];
     if (Dvel || Dscale) Dvel_[i] = b*eye[i] + c*cross[i] + d*outer[i];
   }
-  if (Dvel) mju_copy(Dvel, Dvel_, 9);
+  if (Dvel) mju_copy9(Dvel, Dvel_);
   if (Dscale) mju_mulMatVec3(Dscale, Dvel_, vel);
 }
 
@@ -521,12 +522,16 @@ static void addToParent(const mjModel* m, mjData* d, mjtNum* mat, int n) {
 
 // derivative of cvel, cdof_dot w.r.t qvel
 static void mjd_comVel_vel(const mjModel* m, mjData* d, mjtNum* Dcvel, mjtNum* Dcdofdot) {
-  int nv = m->nv, nbody = m->nbody;
+  int nv = m->nv, nM = m->nM;
+  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
+  int nbody = sleep_filter ? d->nbody_awake : m->nbody;
   int* Badr = m->B_rowadr, * Dadr = m->D_rowadr;
   mjtNum mat[36], matT[36];   // 6x6 matrices
 
   // forward pass over bodies: accumulate Dcvel, set Dcdofdot
-  for (int i = 1; i < nbody; i++) {
+  for (int b=1; b < nbody; b++) {
+    int i = sleep_filter ? d->body_awake_ind[b] : b;
+
     // Dcvel = Dcvel_parent
     copyFromParent(m, d, Dcvel, i);
 
@@ -534,7 +539,7 @@ static void mjd_comVel_vel(const mjModel* m, mjData* d, mjtNum* Dcvel, mjtNum* D
     int doflast = m->body_dofadr[i] + m->body_dofnum[i];
     for (int j = m->body_dofadr[i]; j < doflast; j++) {
       // number of dof ancestors of dof j
-      int Jadr = (j < nv - 1 ? m->dof_Madr[j + 1] : m->nM) - (m->dof_Madr[j] + 1);
+      int Jadr = (j < nv - 1 ? m->dof_Madr[j + 1] : nM) - (m->dof_Madr[j] + 1);
 
       // Dcvel += D(cdof * qvel),  Dcdofdot = D(cvel x cdof)
       switch ((mjtJoint) m->jnt_type[m->dof_jntid[j]]) {
@@ -589,7 +594,13 @@ static void mjd_comVel_vel(const mjModel* m, mjData* d, mjtNum* Dcvel, mjtNum* D
 
 // subtract d qfrc_bias / d qvel from qDeriv
 static void mjd_rne_vel(const mjModel* m, mjData* d) {
-  int nv = m->nv, nbody = m->nbody;
+  int nM = m->nM;
+  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
+  int nbody = sleep_filter ? d->nbody_awake : m->nbody;
+  int nparent = sleep_filter ? d->nparent_awake : m->nbody;
+  int mnv = m->nv;
+  int nv = sleep_filter ? d->nv_awake : mnv;
+
   const int* Badr = m->B_rowadr;
   const int* Dadr = m->D_rowadr;
   const int* Bnnz = m->B_rownnz;
@@ -601,19 +612,37 @@ static void mjd_rne_vel(const mjModel* m, mjData* d) {
   mjtNum* Dcvel = mjSTACKALLOC(d, 6*m->nB, mjtNum);
   mjtNum* Dcacc = mjSTACKALLOC(d, 6*m->nB, mjtNum);
   mjtNum* Dcfrcbody = mjSTACKALLOC(d, 6*m->nB, mjtNum);
-  mjtNum* row = mjSTACKALLOC(d, nv, mjtNum);
+  mjtNum* row = mjSTACKALLOC(d, m->nv, mjtNum);
 
   // clear
-  mju_zero(Dcdofdot, 6*m->nD);
-  mju_zero(Dcvel, 6*m->nB);
-  mju_zero(Dcacc, 6*m->nB);
-  mju_zero(Dcfrcbody, 6*m->nB);
+  if (!sleep_filter) {
+    mju_zero(Dcdofdot,  6*m->nD);
+    mju_zero(Dcvel,     6*m->nB);
+    mju_zero(Dcacc,     6*m->nB);
+    mju_zero(Dcfrcbody, 6*m->nB);
+  } else {
+    for (int i = 0; i < nv; i++) {
+      int dof = d->dof_awake_ind[i];
+      mju_zero(Dcdofdot + 6*m->D_rowadr[dof], 6*m->D_rownnz[dof]);
+    }
+
+    for (int i = 0; i < nbody; i++) {
+      int body = d->body_awake_ind[i];
+      int adr = 6*m->B_rowadr[body];
+      int nnz = 6*m->B_rownnz[body];
+      mju_zero(Dcvel     + adr, nnz);
+      mju_zero(Dcacc     + adr, nnz);
+      mju_zero(Dcfrcbody + adr, nnz);
+    }
+  }
 
   // compute Dcvel and Dcdofdot
   mjd_comVel_vel(m, d, Dcvel, Dcdofdot);
 
   // forward pass over bodies: accumulate Dcacc, set Dcfrcbody
-  for (int i=1; i < nbody; i++) {
+  for (int b=1; b < nbody; b++) {
+    int i = sleep_filter ? d->body_awake_ind[b] : b;
+
     // Dcacc = Dcacc_parent
     copyFromParent(m, d, Dcacc, i);
 
@@ -621,7 +650,7 @@ static void mjd_rne_vel(const mjModel* m, mjData* d) {
     int doflast = m->body_dofadr[i] + m->body_dofnum[i];
     for (int j=m->body_dofadr[i]; j < doflast; j++) {
       // number of dof ancestors of dof j
-      int Jadr = (j < nv - 1 ? m->dof_Madr[j + 1] : m->nM) - (m->dof_Madr[j] + 1);
+      int Jadr = (j < mnv - 1 ? m->dof_Madr[j + 1] : nM) - (m->dof_Madr[j] + 1);
 
       // Dcacc += cdofdot * (D qvel)
       mju_addTo(Dcacc + 6*(Badr[i] + Jadr), d->cdof_dot + 6*j, 6);
@@ -655,12 +684,15 @@ static void mjd_rne_vel(const mjModel* m, mjData* d) {
   mju_zero(Dcfrcbody, 6*Bnnz[0]);
 
   // backward pass over bodies: accumulate Dcfrcbody
-  for (int i=m->nbody-1; i > 0; i--) {
+  for (int b=nparent-1; b > 0; b--) {
+    int i = sleep_filter ? d->parent_awake_ind[b] : b;
     addToParent(m, d, Dcfrcbody, i);
   }
 
   // process all dofs, update qDeriv
-  for (int j=0; j < nv; j++) {
+  for (int v=0; v < nv; v++) {
+    int j = sleep_filter ? d->dof_awake_ind[v] : v;
+
     // get body index
     int i = m->dof_bodyid[j];
 
@@ -794,9 +826,252 @@ static mjtNum mjd_muscleGain_vel(mjtNum len, mjtNum vel, const mjtNum lengthrang
 }
 
 
+//--------------------- utility functions for (d force / d pos) * vec Jacobians --------------------
+
+// add J'*B*J*vec to res, sparse version
+static void addJTBJ_mulSparse(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* vec,
+                              const int* J_rownnz, const int* J_rowadr, const int* J_colind,
+                              const mjtNum* J, const mjtNum* B, int n) {
+  // allocate temp vectors
+  mj_markStack(d);
+  mjtNum* Jv = mjSTACKALLOC(d, n, mjtNum);
+  mjtNum* BJv = mjSTACKALLOC(d, n, mjtNum);
+
+  // Jv = J*vec (Sparse Matrix-Vector Multiplication)
+  mju_zero(Jv, n);
+  for (int i=0; i < n; i++) {
+    int nnz = J_rownnz[i];
+    int adr = J_rowadr[i];
+    for (int k=0; k < nnz; k++) {
+      Jv[i] += J[adr + k] * vec[J_colind[adr + k]];
+    }
+  }
+
+  // BJv = B*Jv (Dense Matrix-Vector Multiplication)
+  mju_mulMatVec(BJv, B, Jv, n, n);
+
+  // res += J'*BJv (Sparse Transpose Matrix-Vector Multiplication)
+  for (int i=0; i < n; i++) {
+    int nnz = J_rownnz[i];
+    int adr = J_rowadr[i];
+    mjtNum val = BJv[i];
+    for (int k=0; k < nnz; k++) {
+      res[J_colind[adr + k]] += J[adr + k] * val;
+    }
+  }
+
+  mj_freeStack(d);
+}
+
+
+// operation type for flex interpolation derivative kernel
+typedef enum {
+  mjFLEXOP_VEC,    // res += J'*K*J*vec
+  mjFLEXOP_ADDH    // H -= J'*K*J to H (dense)
+} mjtFlexOp;
+
+// shared kernel for flex interpolation derivatives, scale = s1 + s2*damping
+//  op: operation type (VEC, or ADDH)
+//  res: output vector (VEC) or dense H matrix (ADDH)
+//  vec: input vector for VEC operation, NULL otherwise
+//  dof_indices, ndof: DOF mapping for ADDH, ignored otherwise
+static void mjd_flexInterp_kernel(const mjModel* m, mjData* d, mjtFlexOp op,
+                                  mjtNum* res, const mjtNum* vec, mjtNum s1, mjtNum s2,
+                                  const int* dof_indices, int ndof) {
+  int nv = m->nv;
+
+  // build global2local map for ADDH
+  int* global2local = NULL;
+  if (op == mjFLEXOP_ADDH) {
+    mj_markStack(d);
+    global2local = mjSTACKALLOC(d, nv, int);
+    mju_fillInt(global2local, -1, nv);
+    for (int i=0; i<ndof; i++) {
+      global2local[dof_indices[i]] = i;
+    }
+  }
+
+  // loop over flexes
+  for (int f=0; f < m->nflex; f++) {
+    // only process flex_interp
+    if (!m->flex_interp[f]) {
+      continue;
+    }
+
+    // get stiffness and damping
+    mjtNum* k = m->flex_stiffness + 21*m->flex_elemadr[f];
+
+    // skip if rigid or no stiffness
+    if (m->flex_rigid[f] || k[0] == 0) {
+      continue;
+    }
+
+    // compute scale
+    mjtNum damping = m->flex_damping[f];
+    mjtNum scale = s1 + s2 * damping;
+
+    // skip if scale is zero
+    if (scale == 0) {
+      continue;
+    }
+
+    int nodenum = m->flex_nodenum[f];
+    int* bodyid = m->flex_nodebodyid + m->flex_nodeadr[f];
+
+    // standard stack allocation
+    mj_markStack(d);
+    mjtNum* xpos = mjSTACKALLOC(d, 3*nodenum, mjtNum);
+    mjtNum* K_rot = mjSTACKALLOC(d, 9*nodenum*nodenum, mjtNum);
+
+    // sparse Jacobian allocations
+    int dim = 3 * nodenum;
+    int* rownnz = mjSTACKALLOC(d, dim, int);
+    int* rowadr = mjSTACKALLOC(d, dim, int);
+    mjtNum* J_val = mjSTACKALLOC(d, dim*nv, mjtNum);
+    int* J_colind = mjSTACKALLOC(d, dim*nv, int);
+
+    // temp allocations for chain
+    int* chain_colind = mjSTACKALLOC(d, nv, int);
+    mjtNum* blk_jac = mjSTACKALLOC(d, 3*nv, mjtNum);
+
+    // compute positions, rotation and Jacobian
+    mjtNum quat[4] = {1, 0, 0, 0};
+    mj_flexInterpState(m, d, f, xpos, NULL, quat);
+
+    // compute generalized stiffness in global frame: K_rot = R * K * R^T
+    mjtNum R[9];
+    mju_quat2Mat(R, quat);       // R = R_global2local
+    mjtNum RT[9];
+    mju_transpose(RT, R, 3, 3);  // RT = R_local2global
+
+    // blockwise rotation: K_rot(i,j) = scale * RT * K_local(i,j) * R
+    // note: k stores -K, so K_rot = scale * (-K_phys)
+    for (int i=0; i < nodenum; i++) {
+      for (int j=0; j < nodenum; j++) {
+        mjtNum blk[9], tmp[9];
+
+        // get K_local(i,j)
+        int adr = (3*i)*(3*nodenum) + 3*j;
+        for (int r=0; r < 3; r++) {
+          for (int c=0; c < 3; c++) {
+            blk[3*r+c] = k[adr + r*(3*nodenum) + c];
+          }
+        }
+
+        // tmp = K * R
+        mju_mulMatMat3(tmp, blk, R);
+
+        // blk = RT * tmp = RT * K * R
+        mju_mulMatMat3(blk, RT, tmp);
+
+        // store scaled into K_rot
+        for (int r=0; r < 3; r++) {
+          for (int c=0; c < 3; c++) {
+            K_rot[adr + r*(3*nodenum) + c] = scale * blk[3*r+c];
+          }
+        }
+      }
+    }
+
+    // construct sparse Jacobian J_val
+    int current_adr = 0;
+    for (int i=0; i < nodenum; i++) {
+        // get chain for this node
+        int chain_nnz = mj_bodyChain(m, bodyid[i], chain_colind);
+
+        // compute sparse Jacobian for this node (3 rows)
+        mj_jacSparse(m, d, blk_jac, NULL, xpos+3*i, bodyid[i], chain_nnz, chain_colind,
+                     /*flg_skipcommon=*/0);
+
+        // copy to sparse structure
+        for (int r=0; r<3; r++) {
+            int row_idx = 3*i + r;
+            rownnz[row_idx] = chain_nnz;
+            rowadr[row_idx] = current_adr;
+
+            for (int idx=0; idx<chain_nnz; idx++) {
+                J_colind[current_adr] = chain_colind[idx];
+                J_val[current_adr] = blk_jac[r*chain_nnz + idx];
+                current_adr++;
+            }
+        }
+    }
+
+    // perform operation
+    if (op == mjFLEXOP_VEC) {
+      // res += J^T * K_rot * J * vec
+      addJTBJ_mulSparse(m, d, res, vec, rownnz, rowadr, J_colind, J_val, K_rot, dim);
+    } else if (op == mjFLEXOP_ADDH) {
+      // H += -J^T * K_rot * J
+      // H is dense ndof x ndof
+
+      // reuse stack for J_reduced (but now we extract from sparse J)
+      mjtNum* J_reduced = mjSTACKALLOC(d, dim*ndof, mjtNum);
+      mju_zero(J_reduced, dim*ndof);
+
+      // extract columns of J into J_reduced
+      for (int i=0; i<dim; i++) {
+          int nnz = rownnz[i];
+          int adr = rowadr[i];
+          for (int idx=0; idx<nnz; idx++) {
+              int global_col = J_colind[adr + idx];
+              int local_idx = global2local[global_col];
+              if (local_idx >= 0) {
+                  J_reduced[i*ndof + local_idx] = J_val[adr + idx];
+              }
+          }
+      }
+
+      // H -= J_reduced^T * K_rot * J_reduced
+      // K_rot * J_reduced (dim x ndof)
+      mjtNum* KJ = mjSTACKALLOC(d, dim*ndof, mjtNum);
+      mju_mulMatMat(KJ, K_rot, J_reduced, dim, dim, ndof);
+
+      // H[i, j] -= sum_k J_reduced[k, i] * KJ[k, j]
+      for (int i=0; i<ndof; i++) {
+        for (int j=0; j<ndof; j++) {
+          mjtNum val = 0;
+          for (int dim_idx=0; dim_idx<dim; dim_idx++) {
+            val += J_reduced[dim_idx*ndof + i] * KJ[dim_idx*ndof + j];
+          }
+          // res is H
+          res[i*ndof + j] -= val;
+        }
+      }
+    }
+
+    mj_freeStack(d);
+  }
+
+  if (op == mjFLEXOP_ADDH) {
+    mj_freeStack(d);  // free global2local
+  }
+}
+
+
+
+// compute res += (h^2 + h*damping) * J'*K*J * vec, for all interpolated flexes
+void mjd_flexInterp_mulKD(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* vec, mjtNum h) {
+  // s1=h*h, s2=h => scale = h*h + h*damping
+  mjd_flexInterp_kernel(m, d, mjFLEXOP_VEC, res, vec, h * h, h, NULL, 0);
+}
+
+
+// add (h^2 + h*damping) * J'*K*J to dense matrix H, for all interpolated flexes
+//  H: dense ndof x ndof matrix
+//  dof_indices: maps local indices to global DOFs
+void mjd_flexInterp_addH(const mjModel* m, mjData* d, mjtNum* H, const int* dof_indices, int ndof, mjtNum h) {
+  mjd_flexInterp_kernel(m, d, mjFLEXOP_ADDH, H, NULL, h * h, h, dof_indices, ndof);
+}
+
+
+
+
+
 // add (d qfrc_actuator / d qvel) to qDeriv
 void mjd_actuator_vel(const mjModel* m, mjData* d) {
   int nu = m->nu;
+  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
 
   // disabled: nothing to add
   if (mjDISABLED(mjDSBL_ACTUATION)) {
@@ -810,12 +1085,37 @@ void mjd_actuator_vel(const mjModel* m, mjData* d) {
       continue;
     }
 
+    // skip if sleeping
+    if (sleep_filter && mj_sleepState(m, d, mjOBJ_ACTUATOR, i) == mjS_ASLEEP) {
+      continue;
+    }
+
+    // skip if force is clamped by forcerange
+    if (m->actuator_forcelimited[i]) {
+      mjtNum force = d->actuator_force[i];
+      mjtNum* range = m->actuator_forcerange + 2*i;
+      if (force <= range[0] || force >= range[1]) {
+        continue;
+      }
+    }
+
     mjtNum bias_vel = 0, gain_vel = 0;
 
     // affine bias
     if (m->actuator_biastype[i] == mjBIAS_AFFINE) {
       // extract bias info: prm = [const, kp, kv]
       bias_vel = (m->actuator_biasprm + mjNBIAS*i)[2];
+    }
+
+    // DC motor bias (back-EMF)
+    else if (m->actuator_biastype[i] == mjBIAS_DCMOTOR) {
+      const mjtNum* dynprm = m->actuator_dynprm + mjNDYN*i;
+      const mjtNum* gainprm = m->actuator_gainprm + mjNGAIN*i;
+      if (dynprm[0] <= 0) {
+        mjtNum R = mju_max(mjMINVAL, gainprm[0]);
+        mjtNum K = gainprm[1];
+        bias_vel -= K * K / R;
+      }
     }
 
     // affine gain
@@ -833,14 +1133,54 @@ void mjd_actuator_vel(const mjModel* m, mjData* d) {
                                     m->actuator_gainprm + mjNGAIN*i);
     }
 
+    // DC motor controller damping and LuGre micro-damping
+    else if (m->actuator_gaintype[i] == mjGAIN_DCMOTOR) {
+      const mjtNum* dynprm = m->actuator_dynprm + mjNDYN*i;
+      const mjtNum* gainprm = m->actuator_gainprm + mjNGAIN*i;
+      mjtNum te = dynprm[0];
+
+      // controller velocity derivative: dV/dω
+      int input_mode = (int)gainprm[8];
+      mjtNum dVdw = 0;
+      if (input_mode == 1) dVdw = -gainprm[6];       // position: -kd
+      else if (input_mode == 2) dVdw = -gainprm[4];   // velocity: -kp
+
+      if (te > 0) {
+        // stateful current with actearly: d(K*next_act)/dω
+        // includes both back-EMF (-K) and controller (dVdw) through act_dot
+        mjtNum R = mju_max(mjMINVAL, gainprm[0]);
+        mjtNum K = gainprm[1];
+        mjtNum s = 1 - mju_exp(-m->opt.timestep / te);
+        bias_vel += K * (dVdw - K) * s / R;
+      } else if (dVdw != 0) {
+        // stateless: controller terms only (back-EMF handled in bias block)
+        mjtNum R = mju_max(mjMINVAL, gainprm[0]);
+        mjtNum K = gainprm[1];
+        bias_vel += K * dVdw / R;
+      }
+
+      // LuGre: force includes -sigma1*z_dot, z_dot = a*z + v
+      // d(sigma1*z_dot)/dv = sigma1*(da/dv*z + 1), ignoring higher-order da/dv*z
+      mjtNum sigma1 = dynprm[6];
+      if (sigma1 > 0) {
+        bias_vel -= sigma1;
+      }
+    }
+
     // force = gain .* [ctrl/act]
     if (gain_vel != 0) {
       if (m->actuator_dyntype[i] == mjDYN_NONE) {
         bias_vel += gain_vel * d->ctrl[i];
       } else {
-        int act_first = m->actuator_actadr[i];
-        int act_last = act_first + m->actuator_actnum[i] - 1;
-        bias_vel += gain_vel * d->act[act_last];
+        int act_adr = m->actuator_actadr[i] + m->actuator_actnum[i] - 1;
+        mjtNum act = d->act[act_adr];
+
+        // use next activation if actearly is set (matching forward pass)
+        if (m->actuator_actearly[i]) {
+          act = mj_nextActivation(m, d, i, act_adr, d->act_dot[act_adr]);
+        }
+
+        bias_vel += gain_vel * act;
       }
     }
 
@@ -1194,7 +1534,8 @@ void mjd_ellipsoidFluid(const mjModel* m, mjData* d, int bodyid) {
 
     // get geom global Jacobian: rotation then translation
     if (mj_isSparse(m)) {
-      mj_jacSparse(m, d, J+3*nnz, J, d->geom_xpos+3*geomid, m->geom_bodyid[geomid], nnz, colind);
+      mj_jacSparse(m, d, J+3*nnz, J, d->geom_xpos+3*geomid, m->geom_bodyid[geomid], nnz, colind,
+                   /*flg_skipcommon=*/0);
     } else {
       mj_jacGeom(m, d, J+3*nv, J, geomid);
     }
@@ -1280,7 +1621,7 @@ void mjd_inertiaBoxFluid(const mjModel* m, mjData* d, int i) {
     nnz = mj_bodyChain(m, i, colind);
 
     // get sparse jacBodyCom
-    mj_jacSparse(m, d, J+3*nnz, J, d->xipos+3*i, i, nnz, colind);
+    mj_jacSparse(m, d, J+3*nnz, J, d->xipos+3*i, i, nnz, colind, /*flg_skipcommon=*/0);
 
     // prepare rownnz, rowadr, colind for all 6 rows
     rownnz[0] = nnz;
@@ -1401,10 +1742,14 @@ void mjd_passive_vel(const mjModel* m, mjData* d) {
     return;
   }
 
+  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
+  int nbody = sleep_filter ? d->nbody_awake : m->nbody;
+
   // fluid drag model, either body-level (inertia box) or geom-level (ellipsoid)
   if (m->opt.viscosity > 0 || m->opt.density > 0) {
-    int nbody = m->nbody;
-    for (int i=1; i < nbody; i++) {
+    for (int b=0; b < nbody; b++) {
+      int i = sleep_filter ? d->body_awake_ind[b] : b;
+
       if (m->body_mass[i] < mjMINVAL) {
         continue;
       }
@@ -1430,8 +1775,15 @@ void mjd_passive_vel(const mjModel* m, mjData* d) {
 
   // dof damping
   int nv = m->nv;
-  for (int i=0; i < nv; i++) {
-    d->qDeriv[m->D_rowadr[i] + m->D_diag[i]] -= m->dof_damping[i];
+  int nv_awake = sleep_filter ? d->nv_awake : nv;
+  for (int j = 0; j < nv_awake; j++) {
+    int i = sleep_filter ? d->dof_awake_ind[j] : j;
+    mjtNum v = d->qvel[i];
+    mjtNum poly[mjNPOLY];
+    mju_copy(poly, m->dof_dampingpoly + mjNPOLY*i, mjNPOLY);
+    mjtNum damping = m->dof_damping[i] + mj_actuatorDamping(m, mjOBJ_JOINT, m->dof_jntid[i], poly);
+    int adr = m->D_rowadr[i] + m->D_diag[i];
+    d->qDeriv[adr] -= mjd_xPolyForce(damping, poly, v, mjNPOLY, 1);
   }
 
   // flex edge damping
@@ -1451,31 +1803,36 @@ void mjd_passive_vel(const mjModel* m, mjData* d) {
         continue;
       }
 
-      // add sparse or dense
-      if (mj_isSparse(m)) {
-        addJTBJSparse(m, d, d->flexedge_J, &B, 1, e,
-                      d->flexedge_J_rownnz, d->flexedge_J_rowadr, d->flexedge_J_colind);
-      } else {
-        addJTBJ(m, d, d->flexedge_J+e*nv, &B, 1);
-      }
+      // always sparse
+      addJTBJSparse(m, d, d->flexedge_J, &B, 1, e,
+                    m->flexedge_J_rownnz, m->flexedge_J_rowadr, m->flexedge_J_colind);
     }
   }
 
   // tendon damping
   int ntendon = m->ntendon;
   for (int i=0; i < ntendon; i++) {
-    mjtNum B = -m->tendon_damping[i];
+    // skip tendon in one or two sleeping trees
+    if (sleep_filter) {
+      int treenum = m->tendon_treenum[i];
+      int id1 = m->tendon_treeid[2*i];
+      if (treenum == 1 && !d->tree_awake[id1]) continue;
+      int id2 = m->tendon_treeid[2*i+1];
+      if (treenum == 2 && !d->tree_awake[id1] && !d->tree_awake[id2]) continue;
+    }
+
+    mjtNum v = d->ten_velocity[i];
+    mjtNum poly[mjNPOLY];
+    mju_copy(poly, m->tendon_dampingpoly+mjNPOLY*i, mjNPOLY);
+    mjtNum damping = m->tendon_damping[i] + mj_actuatorDamping(m, mjOBJ_TENDON, i, poly);
+    mjtNum B = -mjd_xPolyForce(damping, poly, v, mjNPOLY, 1);
 
     if (!B) {
       continue;
     }
 
-    // add sparse or dense
-    if (mj_isSparse(m)) {
-      addJTBJSparse(m, d, d->ten_J, &B, 1, i, d->ten_J_rownnz, d->ten_J_rowadr, d->ten_J_colind);
-    } else {
-      addJTBJ(m, d, d->ten_J+i*nv, &B, 1);
-    }
+    // add sparse
+    addJTBJSparse(m, d, d->ten_J, &B, 1, i, m->ten_J_rownnz, m->ten_J_rowadr, m->ten_J_colind);
   }
 }
 
@@ -1485,8 +1842,14 @@ void mjd_passive_vel(const mjModel* m, mjData* d) {
 // analytical derivative of smooth forces w.r.t velocities:
 //   d->qDeriv = d (qfrc_actuator + qfrc_passive - [qfrc_bias]) / d qvel
 void mjd_smooth_vel(const mjModel* m, mjData* d, int flg_bias) {
+  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nv_awake < m->nv;
+
   // clear qDeriv
-  mju_zero(d->qDeriv, m->nD);
+  if (!sleep_filter) {
+    mju_zero(d->qDeriv, m->nD);
+  } else {
+    mju_zeroSparse(d->qDeriv, m->D_rownnz, m->D_rowadr, d->dof_awake_ind, d->nv_awake);
+  }
 
   // qDeriv += d qfrc_actuator / d qvel
   mjd_actuator_vel(m, d);

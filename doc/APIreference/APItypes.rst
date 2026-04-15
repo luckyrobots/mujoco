@@ -18,7 +18,7 @@ MuJoCo defines a large number of types:
   Note that the API does not use these enum types directly. Instead it uses ints, and the documentation/comments state
   that certain ints correspond to certain enum types. This is because we want the API to be compiler-independent, and
   the C standard does not dictate how many bytes must be used to represent an enum type. Nevertheless, for improved
-  readiblity, we recommend using these types when calling API functions which take them as arguments.
+  readability, we recommend using these types when calling API functions which take them as arguments.
 
 - :ref:`C struct types<tyStructure>`. These can be classified as:
 
@@ -100,7 +100,7 @@ Size type used to represent buffer sizes.
 
 .. code-block:: C
 
-   typedef uint64_t mjtSize;
+   typedef int64_t mjtSize;
 
 
 .. _tyEnums:
@@ -164,6 +164,16 @@ second group are geom types that cannot be used in the model but are used by the
 elements. These values are used in ``m->geom_type`` and ``m->site_type``.
 
 .. mujoco-include:: mjtGeom
+
+
+.. _mjtProjection:
+
+mjtProjection
+~~~~~~~~~~~~~
+
+Type of camera projection. Used in ``m->cam_projection``.
+
+.. mujoco-include:: mjtProjection
 
 
 .. _mjtCamLight:
@@ -369,6 +379,26 @@ Types of data fields returned by contact sensors.
 .. mujoco-include:: mjtConDataField
 
 
+.. _mjtRayDataField:
+
+mjtRayDataField
+~~~~~~~~~~~~~~~
+
+Data fields returned by rangefinder sensors.
+
+.. mujoco-include:: mjtRayDataField
+
+
+.. _mjtCamOutBit:
+
+mjtCamOutBit
+~~~~~~~~~~~~
+
+Camera output type bitflags. These are used in ``m->cam_output``.
+
+.. mujoco-include:: mjtCamOutBit
+
+
 .. _mjtSameFrame:
 
 mjtSameFrame
@@ -378,6 +408,27 @@ Types of frame alignment of elements with their parent bodies. Used as shortcuts
 last argument to :ref:`mj_local2global`.
 
 .. mujoco-include:: mjtSameFrame
+
+
+.. _mjtSleepPolicy:
+
+mjtSleepPolicy
+~~~~~~~~~~~~~~
+
+Sleep policy associated with a tree. The compiler automatically chooses between ``NEVER`` and ``ALLOWED``, but the user
+can override this choice. Only the user can set the ``INIT`` policy (initialized as asleep).
+
+.. mujoco-include:: mjtSleepPolicy
+
+
+.. _mjtLRMode:
+
+mjtLRMode
+~~~~~~~~~
+
+Mode for actuator length range computation. Used in ``mjLROpt.mode``.
+
+.. mujoco-include:: mjtLRMode
 
 
 .. _mjtFlexSelf:
@@ -462,6 +513,15 @@ Timer types. The number of timer types is given by ``mjNTIMER`` which is also th
 
 .. mujoco-include:: mjtTimer
 
+
+.. _mjtSleepState:
+
+mjtSleepState
+~~~~~~~~~~~~~
+
+Sleep state of an object.
+
+.. mujoco-include:: mjtSleepState
 
 
 .. _tyVisEnums:
@@ -749,6 +809,24 @@ Type of orientation specifier.
 
 .. mujoco-include:: mjtOrientation
 
+.. _mjtMeshInertia:
+
+mjtMeshInertia
+~~~~~~~~~~~~~~
+
+Type of mesh inertia computation.
+
+.. mujoco-include:: mjtMeshInertia
+
+.. _mjtMeshBuiltin:
+
+mjtMeshBuiltin
+~~~~~~~~~~~~~~
+
+Type of built-in procedural mesh.
+
+.. mujoco-include:: mjtMeshBuiltin
+
 
 .. _tyPluginEnums:
 
@@ -776,7 +854,7 @@ Struct types
 ------------
 
 The three central struct types for physics simulation are :ref:`mjModel`, :ref:`mjOption` (embedded in :ref:`mjModel`)
-and :ref:`mjData`. An introductory discussion of these strucures can be found in the :ref:`Overview<ModelAndData>`.
+and :ref:`mjData`. An introductory discussion of these structures can be found in the :ref:`Overview<ModelAndData>`.
 
 
 .. _mjModel:
@@ -889,6 +967,24 @@ Options for configuring the automatic :ref:`actuator length-range computation<CL
 
 .. mujoco-include:: mjLROpt
 
+.. _mjCache:
+
+mjCache
+~~~~~~~
+
+Asset cache used by the compiler to avoid repeated slow recompilation. See :ref:`Asset cache<Assetcache>`.
+
+.. mujoco-include:: mjCache
+
+.. _mjtTaskStatus:
+
+mjtTaskStatus
+~~~~~~~~~~~~~
+
+Status values for :ref:`mjTask`.
+
+.. mujoco-include:: mjtTaskStatus
+
 .. _mjTask:
 
 mjTask
@@ -896,6 +992,7 @@ mjTask
 
 This is a representation of a task to be run asynchronously inside of an :ref:`mjThreadPool` . It is created in the
 :ref:`mju_threadPoolEnqueue` method of the :ref:`mjThreadPool`  and is used to join the task at completion.
+The ``status`` field uses values from :ref:`mjtTaskStatus`.
 
 .. mujoco-include:: mjTask
 
@@ -1540,6 +1637,16 @@ triggered by the compiler and the engine during various phases of the computatio
 
 .. mujoco-include:: mjpPlugin
 
+.. _mjSDF:
+
+mjSDF
+~~~~~
+
+Data structure used by the :ref:`Signed Distance Functions<Signeddistancefunction>` API for computing distances and
+gradients between SDF geoms.
+
+.. mujoco-include:: mjSDF
+
 .. _mjpResourceProvider:
 
 mjpResourceProvider
@@ -1549,6 +1656,29 @@ This data structure contains the definition of a :ref:`resource provider <exProv
 used for opening and reading resources.
 
 .. mujoco-include:: mjpResourceProvider
+
+.. _mjpDecoder:
+
+mjpDecoder
+~~~~~~~~~~~~~~~~~~~
+
+This data structure defines a decoder. It contains a set of callbacks used for decoding :ref:`mjResource`
+into :ref:`mjSpec`.
+
+.. mujoco-include:: mjpDecoder
+
+.. _mjpEncoder:
+
+mjpEncoder
+~~~~~~~~~~~~~~~~~~~
+
+This data structure defines an encoder. It contains a set of callbacks used for encoding of :ref:`mjSpec` and
+:ref:`mjModel` into :ref:`mjResource`.
+
+.. mujoco-include:: mjpEncoder
+
+
+
 
 .. _tyFunction:
 
@@ -1678,7 +1808,7 @@ mjfOpenResource
 
    typedef int (*mjfOpenResource)(mjResource* resource);
 
-This callback is for opeing a resource; returns zero on failure.
+This callback is for opening a resource; returns zero on failure.
 
 .. _mjfReadResource:
 
@@ -1726,6 +1856,48 @@ mjfResourceModified
 This callback is for checking if a resource was modified since it was last read.
 Returns positive value if the resource was modified since last open, 0 if resource was not modified,
 and negative value if inconclusive.
+
+.. _mjfDecode:
+
+mjfDecode
+~~~~~~~~~
+
+.. code-block:: C
+
+   typedef mjSpec* (*mjfDecode)(mjResource* resource, const mjVFS* vfs);
+
+
+This callback is given an opened resource, and is responsible for decoding it into a :ref:`mjSpec`.
+Ownership of the resource and the returned spec is responsibility of the caller.
+When decoding fails, the callback should return NULL.
+
+.. _mjfCanDecode:
+
+mjfCanDecode
+~~~~~~~~~~~~
+
+.. code-block:: C
+
+   typedef int (*mjfCanDecode)(const mjResource* resource);
+
+
+This callback is given an opened resource, and is responsible for returning true if the resource can
+be decoded by the :ref:`mjpDecoder<mjpDecoder>`.
+
+.. _mjfEncode:
+
+mjfEncode
+~~~~~~~~~
+
+.. code-block:: C
+
+   typedef int (*mjfEncode)(const mjSpec* s, const mjModel* m, const mjVFS* vfs,
+                            mjResource* resource);
+
+
+This callback populates the :ref:`mjResource<mjResource>` `data` member with bytes representing the
+given spec in the format associated with the owning plugin. This may be called with the associated
+compiled :ref:`mjModel`.
 
 
 .. _tyNotes:

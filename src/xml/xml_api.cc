@@ -20,18 +20,15 @@
 #include <fstream>
 #include <functional>
 #include <memory>
-#include <mutex>
-#include <optional>
 #include <sstream>
 #include <string>
-#include <type_traits>
 
 #include <mujoco/mjmodel.h>
-#include "engine/engine_io.h"
 #include <mujoco/mjspec.h>
+#include "engine/engine_io.h"
 #include "user/user_resource.h"
-#include "user/user_vfs.h"
 #include "xml/xml.h"
+#include "xml/xml_global.h"
 #include "xml/xml_native_reader.h"
 #include "xml/xml_util.h"
 #include "user/user_model.h"
@@ -83,17 +80,6 @@ void GlobalModel::Set(mjSpec* spec) {
 }
 
 
-// returns a single instance of the global model
-GlobalModel& GetGlobalModel() {
-  static GlobalModel global_model;
-
-  // global variables must be trivially destructible
-  static_assert(std::is_trivially_destructible_v<decltype(global_model)>);
-  return global_model;
-}
-
-}  // namespace
-
 //---------------------------------- Functions -----------------------------------------------------
 
 // parse XML file in MJCF or URDF format, compile it, return low-level model
@@ -127,7 +113,7 @@ mjModel* mj_loadXML(const char* filename, const mjVFS* vfs,
   }
 
   // clear old and assign new
-  GetGlobalModel().Set(spec.release());
+  SetGlobalXmlSpec(spec.release());
   return m;
 }
 
@@ -217,23 +203,23 @@ int mj_saveLastXML(const char* filename, const mjModel* m, char* error, int erro
     }
   }
 
-  auto result = GetGlobalModel().ToXML(m, error, error_sz);
-  if (result.has_value()) {
-    fprintf(fp, "%s", result->c_str());
+  const std::string result = GetGlobalXmlSpec(m, error, error_sz);
+  if (!result.empty()) {
+    fprintf(fp, "%s", result.c_str());
   }
 
   if (fp != stdout) {
     fclose(fp);
   }
 
-  return result.has_value();
+  return !result.empty();
 }
 
 
 
 // free last XML
 void mj_freeLastXML(void) {
-  GetGlobalModel().Set();
+  SetGlobalXmlSpec();
 }
 
 
@@ -338,4 +324,3 @@ int mj_saveXMLString(const mjSpec* s, char* xml, int xml_sz, char* error, int er
   xml[result.size()] = 0;
   return 0;
 }
-

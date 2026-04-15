@@ -14,8 +14,9 @@
 # ==============================================================================
 """Base types used in MJX."""
 
+import dataclasses
 import enum
-from typing import Tuple, Union
+from typing import Any, Tuple, Union
 import warnings
 
 import jax
@@ -28,7 +29,8 @@ import numpy as np
 class Impl(enum.Enum):
   """Implementation to use."""
 
-  C = 'c'
+  CPP = 'cpp'
+  C = 'cpp'  # alias C -> CPP
   JAX = 'jax'
   WARP = 'warp'
 
@@ -47,7 +49,7 @@ class Impl(enum.Enum):
 class DisableBit(enum.IntFlag):
   """Disable default feature bitflags.
 
-  Members:
+  Attributes:
     CONSTRAINT:   entire constraint solver
     EQUALITY:     equality constraints
     FRICTIONLOSS: joint and tendon frictionloss constraints
@@ -84,7 +86,7 @@ class DisableBit(enum.IntFlag):
 class EnableBit(enum.IntFlag):
   """Enable optional feature bitflags.
 
-  Members:
+  Attributes:
     INVDISCRETE: discrete-time inverse dynamics
   """
 
@@ -92,12 +94,13 @@ class EnableBit(enum.IntFlag):
   # unsupported: OVERRIDE, ENERGY, FWDINV, ISLAND
   # required by the C implementation only, ignored otherwise: MULTICCD
   MULTICCD = mujoco.mjtEnableBit.mjENBL_MULTICCD
+  SLEEP = mujoco.mjtEnableBit.mjENBL_SLEEP
 
 
 class JointType(enum.IntEnum):
   """Type of degree of freedom.
 
-  Members:
+  Attributes:
     FREE:  global position and orientation (quat)       (7,)
     BALL:  orientation (quat) relative to parent        (4,)
     SLIDE: sliding distance along body-fixed axis       (1,)
@@ -119,7 +122,7 @@ class JointType(enum.IntEnum):
 class IntegratorType(enum.IntEnum):
   """Integrator mode.
 
-  Members:
+  Attributes:
     EULER: semi-implicit Euler
     RK4: 4th-order Runge Kutta
     IMPLICITFAST: implicit in velocity, no rne derivative
@@ -134,7 +137,7 @@ class IntegratorType(enum.IntEnum):
 class GeomType(enum.IntEnum):
   """Type of geometry.
 
-  Members:
+  Attributes:
     PLANE: plane
     HFIELD: height field
     SPHERE: sphere
@@ -160,7 +163,7 @@ class GeomType(enum.IntEnum):
 class ConvexMesh(PyTreeNode):
   """Geom properties for convex meshes.
 
-  Members:
+  Attributes:
     vert: vertices of the convex mesh
     face: faces of the convex mesh
     face_normal: normal vectors for the faces
@@ -178,7 +181,7 @@ class ConvexMesh(PyTreeNode):
 class ConeType(enum.IntEnum):
   """Type of friction cone.
 
-  Members:
+  Attributes:
     PYRAMIDAL: pyramidal
     ELLIPTIC: elliptic
   """
@@ -190,7 +193,7 @@ class ConeType(enum.IntEnum):
 class JacobianType(enum.IntEnum):
   """Type of constraint Jacobian.
 
-  Members:
+  Attributes:
     DENSE: dense
     SPARSE: sparse
     AUTO: sparse if nv>60 and device is TPU, dense otherwise
@@ -204,7 +207,7 @@ class JacobianType(enum.IntEnum):
 class SolverType(enum.IntEnum):
   """Constraint solver algorithm.
 
-  Members:
+  Attributes:
     CG: Conjugate gradient (primal)
     NEWTON: Newton (primal)
   """
@@ -217,7 +220,7 @@ class SolverType(enum.IntEnum):
 class EqType(enum.IntEnum):
   """Type of equality constraint.
 
-  Members:
+  Attributes:
     CONNECT: connect two bodies at a point (ball joint)
     WELD: fix relative position and orientation of two bodies
     JOINT: couple the values of two scalar joints with cubic
@@ -234,7 +237,7 @@ class EqType(enum.IntEnum):
 class WrapType(enum.IntEnum):
   """Type of tendon wrap object.
 
-  Members:
+  Attributes:
     JOINT: constant moment arm
     PULLEY: pulley used to split tendon
     SITE: pass through site
@@ -252,7 +255,7 @@ class WrapType(enum.IntEnum):
 class TrnType(enum.IntEnum):
   """Type of actuator transmission.
 
-  Members:
+  Attributes:
     JOINT: force on joint
     JOINTINPARENT: force on joint, expressed in parent frame
     TENDON: force on tendon
@@ -269,7 +272,7 @@ class TrnType(enum.IntEnum):
 class DynType(enum.IntEnum):
   """Type of actuator dynamics.
 
-  Members:
+  Attributes:
     NONE: no internal dynamics; ctrl specifies force
     INTEGRATOR: integrator: da/dt = u
     FILTER: linear filter: da/dt = (u-a) / tau
@@ -288,7 +291,7 @@ class DynType(enum.IntEnum):
 class GainType(enum.IntEnum):
   """Type of actuator gain.
 
-  Members:
+  Attributes:
     FIXED: fixed gain
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle FLV curve computed by muscle_gain
@@ -303,7 +306,7 @@ class GainType(enum.IntEnum):
 class BiasType(enum.IntEnum):
   """Type of actuator bias.
 
-  Members:
+  Attributes:
     NONE: no bias
     AFFINE: const + kp*length + kv*velocity
     MUSCLE: muscle passive force computed by muscle_bias
@@ -318,7 +321,7 @@ class BiasType(enum.IntEnum):
 class ConstraintType(enum.IntEnum):
   """Type of constraint.
 
-  Members:
+  Attributes:
     EQUALITY: equality constraint
     LIMIT_JOINT: joint limit
     LIMIT_TENDON: tendon limit
@@ -339,7 +342,7 @@ class ConstraintType(enum.IntEnum):
 class CamLightType(enum.IntEnum):
   """Type of camera light.
 
-  Members:
+  Attributes:
     FIXED: pos and rot fixed in body
     TRACK: pos tracks body, rot fixed in global
     TRACKCOM: pos tracks subtree com, rot fixed in body
@@ -357,7 +360,7 @@ class CamLightType(enum.IntEnum):
 class SensorType(enum.IntEnum):
   """Type of sensor.
 
-  Members:
+  Attributes:
     MAGNETOMETER: magnetometer
     CAMPROJECTION: camera projection
     RANGEFINDER: rangefinder
@@ -433,7 +436,7 @@ class SensorType(enum.IntEnum):
 class ObjType(PyTreeNode):
   """Type of object.
 
-  Members:
+  Attributes:
     UNKNOWN: unknown object type
     BODY: body
     XBODY: body, used to access regular frame instead of i-frame
@@ -487,21 +490,6 @@ class OptionJAX(PyTreeNode):
   has_fluid_params: bool
 
 
-class OptionC(PyTreeNode):
-  """C-specific option."""
-
-  o_margin: jax.Array
-  o_solref: jax.Array
-  o_solimp: jax.Array
-  o_friction: jax.Array
-  disableactuator: int
-  sdf_initpoints: int
-  has_fluid_params: bool
-  noslip_tolerance: jax.Array
-  ccd_tolerance: jax.Array
-  noslip_iterations: int
-  ccd_iterations: int
-  sdf_iterations: int
 
 
 class Option(PyTreeNode):
@@ -524,104 +512,25 @@ class Option(PyTreeNode):
   integrator: IntegratorType
   solver: SolverType
   timestep: jax.Array
-  _impl: Union[OptionJAX, OptionC, mjxw_types.OptionWarp]
+  _impl: Union[OptionJAX, mjxw_types.OptionWarp]
 
 
-class ModelC(PyTreeNode):
-  """CPU-specific model data."""
+class ModelCPP(PyTreeNode):
+  """Minimal Model implementation holding only the pointer."""
+  # To ensure that we retain the full pointer even if jax.config.enable_x64 is
+  # set to True, we store the pointer as two 32-bit values. In the FFI call,
+  # we combine the two values into a single pointer value.
+  pointer_lo: jax.Array
+  pointer_hi: jax.Array
 
-  nbvh: jax.Array
-  nbvhstatic: jax.Array
-  nbvhdynamic: jax.Array
-  nflex: jax.Array
-  nflexvert: jax.Array
-  nflexedge: jax.Array
-  nflexelem: jax.Array
-  nflexelemdata: jax.Array
-  nflexshelldata: jax.Array
-  nflexevpair: jax.Array
-  nflextexcoord: jax.Array
-  nplugin: jax.Array
-  ntree: jax.Array
-  narena: jax.Array
-  body_bvhadr: jax.Array
-  body_bvhnum: jax.Array
-  bvh_child: jax.Array
-  bvh_nodeid: jax.Array
-  bvh_aabb: jax.Array
-  oct_child: jax.Array
-  oct_aabb: jax.Array
-  oct_coeff: jax.Array
-  geom_plugin: jax.Array
-  light_bodyid: jax.Array
-  light_targetbodyid: jax.Array
-  flex_contype: jax.Array
-  flex_conaffinity: jax.Array
-  flex_condim: jax.Array
-  flex_priority: jax.Array
-  flex_solmix: jax.Array
-  flex_solref: jax.Array
-  flex_solimp: jax.Array
-  flex_friction: jax.Array
-  flex_margin: jax.Array
-  flex_gap: jax.Array
-  flex_internal: jax.Array
-  flex_selfcollide: jax.Array
-  flex_activelayers: jax.Array
-  flex_passive: jax.Array
-  flex_dim: jax.Array
-  flex_vertadr: jax.Array
-  flex_vertnum: jax.Array
-  flex_edgeadr: jax.Array
-  flex_edgenum: jax.Array
-  flex_elemadr: jax.Array
-  flex_elemnum: jax.Array
-  flex_elemdataadr: jax.Array
-  flex_evpairadr: jax.Array
-  flex_evpairnum: jax.Array
-  flex_vertbodyid: jax.Array
-  flex_edge: jax.Array
-  flex_elem: jax.Array
-  flex_elemlayer: jax.Array
-  flex_evpair: jax.Array
-  flex_vert: jax.Array
-  flexedge_length0: jax.Array
-  flexedge_invweight0: jax.Array
-  flex_radius: jax.Array
-  flex_edgestiffness: jax.Array
-  flex_edgedamping: jax.Array
-  flex_edgeequality: jax.Array
-  flex_rigid: jax.Array
-  flexedge_rigid: jax.Array
-  flex_centered: jax.Array
-  flex_bvhadr: jax.Array
-  flex_bvhnum: jax.Array
-  actuator_plugin: jax.Array
-  sensor_plugin: jax.Array
-  plugin: jax.Array
-  plugin_stateadr: jax.Array
-  B_rownnz: jax.Array  # pylint:disable=invalid-name
-  B_rowadr: jax.Array  # pylint:disable=invalid-name
-  B_colind: jax.Array  # pylint:disable=invalid-name
-  M_rownnz: jax.Array  # pylint:disable=invalid-name
-  M_rowadr: jax.Array  # pylint:disable=invalid-name
-  M_colind: jax.Array  # pylint:disable=invalid-name
-  mapM2M: jax.Array  # pylint:disable=invalid-name
-  D_rownnz: jax.Array  # pylint:disable=invalid-name
-  D_rowadr: jax.Array  # pylint:disable=invalid-name
-  D_diag: jax.Array  # pylint:disable=invalid-name
-  D_colind: jax.Array  # pylint:disable=invalid-name
-  mapM2D: jax.Array  # pylint:disable=invalid-name
-  mapD2M: jax.Array  # pylint:disable=invalid-name
-  mesh_polynum: jax.Array
-  mesh_polyadr: jax.Array
-  mesh_polynormal: jax.Array
-  mesh_polyvertadr: jax.Array
-  mesh_polyvertnum: jax.Array
-  mesh_polyvert: jax.Array
-  mesh_polymapadr: jax.Array
-  mesh_polymapnum: jax.Array
-  mesh_polymap: jax.Array
+
+class DataCPP(PyTreeNode):
+  """Minimal Data implementation holding only the pointer."""
+  # To ensure that we retain the full pointer even if jax.config.enable_x64 is
+  # set to True, we store the pointer as two 32-bit values. In the FFI call,
+  # we combine the two values into a single pointer value.
+  pointer_lo: jax.Array
+  pointer_hi: jax.Array
 
 
 class ModelJAX(PyTreeNode):
@@ -638,7 +547,59 @@ class ModelJAX(PyTreeNode):
 
 
 class Model(PyTreeNode):
-  """Static model of the scene that remains unchanged with each physics step."""
+  """Static model of the scene that remains unchanged with each physics step.
+
+  Attributes:
+    nq: number of generalized coordinates
+    nv: number of degrees of freedom
+    nu: number of actuators/controls
+    na: number of activation states
+    nbody: number of bodies
+    njnt: number of joints
+    ngeom: number of geoms
+    nsite: number of sites
+    ncam: number of cameras
+    nlight: number of lights
+    nmesh: number of meshes
+    nmeshvert: number of vertices for all meshes
+    nmeshnormal: number of normals in all meshes
+    nmeshtexcoord: number of texcoords in all meshes
+    nmeshface: number of faces for all meshes
+    nmeshgraph: number of ints in mesh auxiliary data
+    nmeshpoly: number of polygons in all meshes
+    nmeshpolyvert: number of vertices in all polygons
+    nmeshpolymap: number of polygons in vertex map
+    nhfield: number of heightfields
+    nhfielddata: size of elevation data
+    ntex: number of textures
+    ntexdata: size of texture data
+    nmat: number of materials
+    npair: number of predefined geom pairs
+    nexclude: number of excluded geom pairs
+    neq: number of equality constraints
+    ntendon: number of tendons
+    nwrap: number of wrap objects in all tendon paths
+    nsensor: number of sensors
+    nnumeric: number of numeric custom fields
+    ntuple: number of tuple custom fields
+    nkey: number of keyframes
+    nmocap: number of mocap bodies
+    nM: number of non-zeros in sparse inertia matrix
+    nB: number of non-zeros in B matrix
+    nC: number of non-zeros in C matrix
+    nD: number of non-zeros in D matrix
+    nJmom: number of non-zeros in Jacobian momentum matrix
+    nJten: number of non-zeros in sparse tendon Jacobian
+    ngravcomp: number of bodies with nonzero gravcomp
+    nuserdata: number of elements in userdata
+    nsensordata: number of elements in sensor data vector
+    npluginstate: number of plugin state values
+    nhistory: number of history buffer elements
+    opt: physics options
+    stat: model statistics
+    qpos0: qpos values at default pose
+    qpos_spring: reference pose for springs
+  """
 
   nq: int
   nv: int
@@ -650,6 +611,7 @@ class Model(PyTreeNode):
   nsite: int
   ncam: int
   nlight: int
+  nflex: int
   nmesh: int
   nmeshvert: int
   nmeshnormal: int
@@ -679,10 +641,12 @@ class Model(PyTreeNode):
   nC: int  # pylint:disable=invalid-name
   nD: int  # pylint:disable=invalid-name
   nJmom: int  # pylint:disable=invalid-name
+  nJten: int  # pylint:disable=invalid-name
   ngravcomp: int
   nuserdata: int
   nsensordata: int
   npluginstate: int
+  nhistory: int
   opt: Option
   stat: Union[Statistic, StatisticWarp]
   qpos0: jax.Array
@@ -724,6 +688,7 @@ class Model(PyTreeNode):
   jnt_pos: jax.Array
   jnt_axis: jax.Array
   jnt_stiffness: jax.Array
+  jnt_stiffnesspoly: jax.Array
   jnt_range: jax.Array
   jnt_actfrcrange: jax.Array
   jnt_margin: jax.Array
@@ -738,6 +703,7 @@ class Model(PyTreeNode):
   dof_frictionloss: jax.Array
   dof_armature: jax.Array
   dof_damping: jax.Array
+  dof_dampingpoly: jax.Array
   dof_invweight0: jax.Array
   dof_M0: jax.Array  # pylint:disable=invalid-name
   geom_type: np.ndarray
@@ -754,7 +720,7 @@ class Model(PyTreeNode):
   geom_solref: jax.Array
   geom_solimp: jax.Array
   geom_size: jax.Array
-  geom_aabb: np.ndarray
+  geom_aabb: jax.Array
   geom_rbound: jax.Array
   geom_pos: jax.Array
   geom_quat: jax.Array
@@ -777,10 +743,10 @@ class Model(PyTreeNode):
   cam_poscom0: jax.Array
   cam_pos0: jax.Array
   cam_mat0: jax.Array
-  cam_fovy: np.ndarray
+  cam_fovy: jax.Array
   cam_resolution: np.ndarray
   cam_sensorsize: np.ndarray
-  cam_intrinsic: np.ndarray
+  cam_intrinsic: jax.Array
   light_mode: np.ndarray
   light_type: jax.Array
   light_castshadow: jax.Array
@@ -809,6 +775,9 @@ class Model(PyTreeNode):
   mesh_texcoordadr: np.ndarray
   mesh_texcoordnum: np.ndarray
   mesh_texcoord: np.ndarray
+  flex_vertadr: np.ndarray
+  flex_vertnum: np.ndarray
+  flex_vert0: np.ndarray
   hfield_size: np.ndarray
   hfield_nrow: np.ndarray
   hfield_ncol: np.ndarray
@@ -819,9 +788,9 @@ class Model(PyTreeNode):
   tex_width: np.ndarray
   tex_nchannel: np.ndarray
   tex_adr: np.ndarray
-  tex_data: jax.Array
+  tex_data: np.ndarray
   mat_rgba: jax.Array
-  mat_texid: np.ndarray
+  mat_texid: jax.Array
   pair_dim: np.ndarray
   pair_geom1: np.ndarray
   pair_geom2: np.ndarray
@@ -853,7 +822,9 @@ class Model(PyTreeNode):
   tendon_actfrcrange: jax.Array
   tendon_margin: jax.Array
   tendon_stiffness: jax.Array
+  tendon_stiffnesspoly: jax.Array
   tendon_damping: jax.Array
+  tendon_dampingpoly: jax.Array
   tendon_armature: jax.Array
   tendon_frictionloss: jax.Array
   tendon_lengthspring: jax.Array
@@ -881,9 +852,9 @@ class Model(PyTreeNode):
   actuator_forcerange: jax.Array
   actuator_actrange: jax.Array
   actuator_gear: jax.Array
-  actuator_cranklength: np.ndarray
+  actuator_cranklength: jax.Array
   actuator_acc0: jax.Array
-  actuator_lengthrange: np.ndarray
+  actuator_lengthrange: jax.Array
   sensor_type: np.ndarray
   sensor_datatype: np.ndarray
   sensor_needstage: np.ndarray
@@ -914,6 +885,7 @@ class Model(PyTreeNode):
   name_geomadr: np.ndarray
   name_siteadr: np.ndarray
   name_camadr: np.ndarray
+  name_flexadr: np.ndarray
   name_meshadr: np.ndarray
   name_hfieldadr: np.ndarray
   name_pairadr: np.ndarray
@@ -927,12 +899,12 @@ class Model(PyTreeNode):
   names: bytes
   signature: np.uint64
   _sizes: jax.Array
-  _impl: Union[ModelC, ModelJAX, mjxw_types.ModelWarp]
+  _impl: Union[ModelJAX, mjxw_types.ModelWarp]
 
   @property
   def impl(self) -> Impl:
     return {
-        ModelC: Impl.C,
+        ModelCPP: Impl.CPP,
         ModelJAX: Impl.JAX,
         mjxw_types.ModelWarp: Impl.WARP,
     }[type(self._impl)]
@@ -944,8 +916,8 @@ class Model(PyTreeNode):
       return object.__getattribute__(self, 'value')
 
     try:
-      impl_instsance = object.__getattribute__(self, '_impl')
-      val = getattr(impl_instsance, name)
+      impl_instance = object.__getattribute__(self, '_impl')
+      val = getattr(impl_instance, name)
       warnings.warn(
           f'Accessing `{name}` directly from `Model` is deprecated. '
           f'Access it via `model._impl.{name}` instead.',
@@ -995,79 +967,6 @@ class Contact(PyTreeNode):
   efc_address: np.ndarray
 
 
-class DataC(PyTreeNode):
-  """C-specific data."""
-
-  # constant sizes:
-  # TODO(stunya): make these sizes jax.Array?
-  ne: int
-  nf: int
-  nl: int
-  nefc: int
-  ncon: int
-  # TODO(stunya): remove most of these fields
-  solver_niter: jax.Array
-  cdof: jax.Array
-  cinert: jax.Array
-  light_xpos: jax.Array
-  light_xdir: jax.Array
-  flexvert_xpos: jax.Array
-  flexelem_aabb: jax.Array
-  flexedge_J_rownnz: jax.Array  # pylint:disable=invalid-name
-  flexedge_J_rowadr: jax.Array  # pylint:disable=invalid-name
-  flexedge_J_colind: jax.Array  # pylint:disable=invalid-name
-  flexedge_J: jax.Array  # pylint:disable=invalid-name
-  flexedge_length: jax.Array
-  ten_wrapadr: jax.Array
-  ten_wrapnum: jax.Array
-  ten_J_rownnz: jax.Array  # pylint:disable=invalid-name
-  ten_J_rowadr: jax.Array  # pylint:disable=invalid-name
-  ten_J_colind: jax.Array  # pylint:disable=invalid-name
-  ten_J: jax.Array  # pylint:disable=invalid-name
-  wrap_obj: jax.Array
-  wrap_xpos: jax.Array
-  actuator_length: jax.Array
-  moment_rownnz: jax.Array  # pylint:disable=invalid-name
-  moment_rowadr: jax.Array  # pylint:disable=invalid-name
-  moment_colind: jax.Array  # pylint:disable=invalid-name
-  actuator_moment: jax.Array
-  crb: jax.Array
-  qM: jax.Array  # pylint:disable=invalid-name
-  M: jax.Array  # pylint:disable=invalid-name
-  qLD: jax.Array  # pylint:disable=invalid-name
-  qLDiagInv: jax.Array  # pylint:disable=invalid-name
-  bvh_aabb_dyn: jax.Array
-  bvh_active: jax.Array
-  # position, velocity dependent:
-  flexedge_velocity: jax.Array
-  ten_velocity: jax.Array
-  actuator_velocity: jax.Array
-  cdof_dot: jax.Array
-  plugin_data: jax.Array
-  qH: jax.Array  # pylint:disable=invalid-name
-  qHDiagInv: jax.Array  # pylint:disable=invalid-name
-  qDeriv: jax.Array  # pylint:disable=invalid-name
-  qLU: jax.Array  # pylint:disable=invalid-name
-  qfrc_spring: jax.Array
-  qfrc_damper: jax.Array
-  cacc: jax.Array
-  cfrc_int: jax.Array
-  cfrc_ext: jax.Array
-  subtree_linvel: jax.Array
-  subtree_angmom: jax.Array
-  # dynamically sized arrays which are made static for the frontend JAX API
-  # TODO(stunya): remove these dynamic fields entirely
-  contact: Contact
-  efc_type: jax.Array
-  efc_J: jax.Array  # pylint:disable=invalid-name
-  efc_pos: jax.Array
-  efc_margin: jax.Array
-  efc_frictionloss: jax.Array
-  efc_D: jax.Array  # pylint:disable=invalid-name
-  efc_aref: jax.Array
-  efc_force: jax.Array
-
-
 class DataJAX(PyTreeNode):
   """JAX-specific data."""
 
@@ -1077,14 +976,12 @@ class DataJAX(PyTreeNode):
   nefc: int
   ncon: int
   solver_niter: jax.Array
-  cdof: jax.Array
   cinert: jax.Array
   ten_wrapadr: jax.Array
   ten_wrapnum: jax.Array
   ten_J: jax.Array  # pylint:disable=invalid-name
   wrap_obj: jax.Array
   wrap_xpos: jax.Array
-  actuator_length: jax.Array
   actuator_moment: jax.Array
   crb: jax.Array
   qM: jax.Array  # pylint:disable=invalid-name
@@ -1093,7 +990,7 @@ class DataJAX(PyTreeNode):
   qLDiagInv: jax.Array  # pylint:disable=invalid-name
   ten_velocity: jax.Array
   actuator_velocity: jax.Array
-  cdof_dot: jax.Array
+
   cacc: jax.Array
   cfrc_int: jax.Array
   cfrc_ext: jax.Array
@@ -1112,7 +1009,56 @@ class DataJAX(PyTreeNode):
 
 
 class Data(PyTreeNode):
-  """Dynamic state that updates each step."""
+  """Dynamic state that updates each step.
+
+  Attributes:
+    time: simulation time
+    qpos: position
+    qvel: velocity
+    act: actuator activation
+    history: actuator history buffer
+    qacc_warmstart: warm start for solver
+    plugin_state: plugin state values
+    ctrl: control input
+    qfrc_applied: applied generalized force
+    xfrc_applied: applied Cartesian force/torque
+    eq_active: enable/disable equality constraints
+    mocap_pos: positions of mocap bodies
+    mocap_quat: orientations of mocap bodies
+    qacc: acceleration
+    act_dot: time-derivative of actuator activation
+    userdata: user data
+    sensordata: sensor data output
+    xpos: Cartesian position of body frame
+    xquat: Cartesian orientation of body frame
+    xmat: rotation matrix of body frame
+    xipos: Cartesian position of body com
+    ximat: rotation matrix of body inertia
+    xanchor: Cartesian position of joint anchor
+    xaxis: Cartesian joint axis
+    ten_length: tendon lengths
+    geom_xpos: Cartesian position of geoms
+    geom_xmat: rotation matrix of geoms
+    site_xpos: Cartesian position of sites
+    site_xmat: rotation matrix of sites
+    cam_xpos: camera positions
+    cam_xmat: camera rotation matrices
+    subtree_com: com of each subtree
+    cvel: center of mass based velocity
+    cdof: center of mass based jacobian
+    cdof_dot: time-derivative of cdof
+    qfrc_bias: C(qpos,qvel)
+    qfrc_gravcomp: gravity compensation term
+    qfrc_fluid: fluid drag and buoyancy forces
+    qfrc_passive: passive force
+    qfrc_actuator: actuator force
+    actuator_force: actuator force in actuation space
+    actuator_length: actuator lengths
+    qfrc_smooth: smooth dynamics force
+    qacc_smooth: acceleration without constraints
+    qfrc_constraint: constraint force
+    qfrc_inverse: net external force for inverse dynamics
+  """
 
   # global properties:
   time: jax.Array
@@ -1120,6 +1066,7 @@ class Data(PyTreeNode):
   qpos: jax.Array
   qvel: jax.Array
   act: jax.Array
+  history: jax.Array
   qacc_warmstart: jax.Array
   plugin_state: jax.Array
   # control:
@@ -1153,30 +1100,33 @@ class Data(PyTreeNode):
   cam_xmat: jax.Array
   subtree_com: jax.Array
   cvel: jax.Array
+  cdof: jax.Array
+  cdof_dot: jax.Array
   qfrc_bias: jax.Array
   qfrc_gravcomp: jax.Array
   qfrc_fluid: jax.Array
   qfrc_passive: jax.Array
   qfrc_actuator: jax.Array
   actuator_force: jax.Array
+  actuator_length: jax.Array
   qfrc_smooth: jax.Array
   qacc_smooth: jax.Array
   qfrc_constraint: jax.Array
   qfrc_inverse: jax.Array
-  _impl: Union[DataC, DataJAX, mjxw_types.DataWarp]
+  _impl: Union[DataCPP, DataJAX, mjxw_types.DataWarp]
 
   @property
   def impl(self) -> Impl:
     return {
-        DataC: Impl.C,
+        DataCPP: Impl.CPP,
         DataJAX: Impl.JAX,
         mjxw_types.DataWarp: Impl.WARP,
     }[type(self._impl)]
 
   def __getattr__(self, name: str):
     try:
-      impl_instsance = object.__getattribute__(self, '_impl')
-      val = getattr(impl_instsance, name)
+      impl_instance = object.__getattribute__(self, '_impl')
+      val = getattr(impl_instance, name)
       warnings.warn(
           f'Accessing `{name}` directly from `Data` is deprecated. '
           f'Access it via `data._impl.{name}` instead.',

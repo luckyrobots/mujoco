@@ -495,6 +495,15 @@ class MuJoCoBindingsTest(parameterized.TestCase):
     mujoco.mj_forward(self.model, data_copy)
     self.assertEqual(data_copy.ncon, 4)
 
+    # Test copying into existing data.
+    data_copy.qpos[1] = 1.234
+    data_copy.geom_xpos[2] = 5.678
+    self.assertFalse(np.array_equal(self.data.qpos, data_copy.qpos))
+    self.assertFalse(np.array_equal(self.data.geom_xpos, data_copy.geom_xpos))
+    mujoco.mj_copyData(self.data, self.model, data_copy)
+    np.testing.assert_array_equal(self.data.qpos, data_copy.qpos)
+    np.testing.assert_array_equal(self.data.geom_xpos, data_copy.geom_xpos)
+
   def test_mjdata_can_read_warning_array(self):
     warnings = self.data.warning
     self.assertLen(warnings, mujoco.mjtWarning.mjNWARNING)
@@ -632,8 +641,11 @@ class MuJoCoBindingsTest(parameterized.TestCase):
     self.assertEqual(self.data.efc_J.shape, (nj,))
     self.assertEqual(self.data.efc_KBIP.shape, (nefc, 4))
 
-    expected_error = 'insufficient arena memory available'
-    with self.assertRaisesWithLiteralMatch(mujoco.FatalError, expected_error):
+    expected_error = (
+        r'Insufficient arena memory, currently allocated memory=' +
+        r'"[0-9]+[A-Z]?". Increase using <size memory="X"/>.'
+    )
+    with self.assertRaisesRegex(mujoco.FatalError, expected_error):
       mujoco._functions._realloc_con_efc(self.data, 100000000, 100000000)
     self.assertEmpty(self.data.contact)
     self.assertEmpty(self.data.efc_id)
@@ -803,6 +815,13 @@ class MuJoCoBindingsTest(parameterized.TestCase):
     # Expect next states to be equal.
     np.testing.assert_array_equal(state1a, state1b)
 
+    # Test mj_copyState
+    data2 = mujoco.MjData(self.model)
+    mujoco.mj_copyState(self.model, self.data, data2, sig)
+    state1c = np.empty(size, np.float64)
+    mujoco.mj_getState(self.model, data2, state1c, sig)
+    np.testing.assert_array_equal(state1a, state1c)
+
   def test_mj_setKeyframe(self):  # pylint: disable=invalid-name
     mujoco.mj_step(self.model, self.data)
 
@@ -947,7 +966,7 @@ Euler integrator, semi-implicit in velocity.
     self.assertEqual(mujoco.mjtEnableBit.mjENBL_OVERRIDE, 1 << 0)
     self.assertEqual(mujoco.mjtEnableBit.mjENBL_ENERGY, 1 << 1)
     self.assertEqual(mujoco.mjtEnableBit.mjENBL_FWDINV, 1 << 2)
-    self.assertEqual(mujoco.mjtEnableBit.mjNENABLE, 5)
+    self.assertEqual(mujoco.mjtEnableBit.mjNENABLE, 6)
     self.assertEqual(mujoco.mjtGeom.mjGEOM_PLANE, 0)
     self.assertEqual(mujoco.mjtGeom.mjGEOM_HFIELD, 1)
     self.assertEqual(mujoco.mjtGeom.mjGEOM_SPHERE, 2)
@@ -1269,8 +1288,9 @@ Euler integrator, semi-implicit in velocity.
     geomid = np.zeros(1, np.int32)
     mujoco.mj_forward(self.model, self.data)
     mujoco.mj_ray(
-        self.model, self.data, [0, 0, 0], [0, 0, 1], None, 0, 0, geomid
+        self.model, self.data, [0, 0, 0], [0, 0, 1], None, 0, 0, geomid, None
     )
+    # Check the normal argument is optional
     mujoco.mj_ray(
         self.model,
         self.data,
@@ -1282,6 +1302,7 @@ Euler integrator, semi-implicit in velocity.
         geomid,
     )
     # Check that named arguments work
+    normal = np.zeros(3, np.float64)
     mujoco.mj_ray(
         m=self.model,
         d=self.data,
@@ -1291,7 +1312,33 @@ Euler integrator, semi-implicit in velocity.
         flg_static=0,
         bodyexclude=0,
         geomid=geomid,
+        normal=normal,
     )
+
+  def test_mju_ray_geom(self):
+    # Test mju_rayGeom with a plane at origin
+    pos = np.zeros(3)
+    mat = np.eye(3).flatten()
+    size = np.array([10.0, 10.0, 1.0])
+    pnt = np.array([5.0, 5.0, 5.0])
+    # Normalize direction for Euclidean distance
+    vec = np.array([-1.0, -1.0, -1.0])
+    vec = vec / np.linalg.norm(vec)
+    normal = np.zeros(3)
+
+    # Call with normal argument
+    dist = mujoco.mju_rayGeom(
+        pos, mat, size, pnt, vec, mujoco.mjtGeom.mjGEOM_PLANE, normal
+    )
+    expected_dist = np.sqrt(3 * 5 * 5)
+    np.testing.assert_allclose(dist, expected_dist)
+    np.testing.assert_allclose(normal, [0, 0, 1])
+
+    # Call without normal argument (should still work)
+    dist2 = mujoco.mju_rayGeom(
+        pos, mat, size, pnt, vec, mujoco.mjtGeom.mjGEOM_PLANE
+    )
+    np.testing.assert_allclose(dist2, expected_dist)
 
   def test_mj_multi_ray(self):
     nray = 3
@@ -1314,6 +1361,7 @@ Euler integrator, semi-implicit in velocity.
         bodyexclude=-1,
         geomid=geomid,
         dist=dist,
+        normal=None,
         nray=nray,
         cutoff=mujoco.mjMAXVAL,
     )
@@ -1321,7 +1369,9 @@ Euler integrator, semi-implicit in velocity.
     for i in range(0, 3):
       self.assertEqual(
           dist[i],
-          mujoco.mj_ray(self.model, self.data, pnt, vec[i], None, 1, -1, geom1),
+          mujoco.mj_ray(
+              self.model, self.data, pnt, vec[i], None, 1, -1, geom1, None
+          ),
       )
       self.assertEqual(geomid[i], geom1)
       self.assertEqual(geomid[i], geom_ex[i])
@@ -1668,6 +1718,191 @@ Euler integrator, semi-implicit in velocity.
     dependencies = mujoco.mju_getXMLDependencies(model_path)
     self.assertIn(model_path, dependencies)
     self.assertIn(msh_path, dependencies)
+
+  def test_mj_read_ctrl_and_init_ctrl_delay(self):
+    xml = r"""
+<mujoco>
+  <worldbody>
+    <body>
+      <geom type="sphere" size="0.1"/>
+      <joint name="hinge" type="hinge"/>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="actuator" joint="hinge" delay="0.01" nsample="4"/>
+  </actuator>
+</mujoco>
+"""
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    # Initialize the delay buffer with known values
+    # actuator_history[i, 0] = nsample, actuator_history[i, 1] = interp
+    nhistory = model.actuator_history[0, 0]
+    self.assertEqual(nhistory, 4)
+    times = np.array([0.0, 0.01, 0.02, 0.03])
+    values = np.array([1.0, 2.0, 3.0, 4.0])
+    mujoco.mj_initCtrlHistory(model, data, 0, times, values)
+
+    # Read back a value using zero-order hold
+    # mj_readCtrl auto-subtracts delay: lookup_time = read_time - delay
+    # delay = 0.01, so:
+    #   read_time=0.02 -> lookup at 0.01 -> value 2.0
+    #   read_time=0.03 -> lookup at 0.02 -> value 3.0
+    result = mujoco.mj_readCtrl(model, data, 0, 0.02, interp=0)
+    self.assertEqual(result, 2.0)  # ZOH returns value at t=0.01
+
+    # Test with times=None (uses existing timestamps)
+    new_values = np.array([5.0, 6.0, 7.0, 8.0])
+    mujoco.mj_initCtrlHistory(model, data, 0, None, new_values)
+    # read_time=0.02 -> lookup at 0.01 -> value 6.0
+    result = mujoco.mj_readCtrl(model, data, 0, 0.02, interp=0)
+    self.assertEqual(result, 6.0)
+
+    # Test dimension validation errors
+    with self.assertRaises(TypeError):
+      # wrong times
+      mujoco.mj_initCtrlHistory(model, data, 0, np.zeros(3), values)
+    with self.assertRaises(TypeError):
+      # wrong values
+      mujoco.mj_initCtrlHistory(model, data, 0, times, np.zeros(5))
+
+  def test_mj_read_sensor_and_init_sensor_delay(self):
+    xml = r"""
+<mujoco>
+  <worldbody>
+    <body>
+      <geom type="sphere" size="0.1"/>
+      <joint name="hinge" type="hinge"/>
+      <site name="site"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <accelerometer name="accel" site="site" delay="0.01" nsample="3"/>
+  </sensor>
+</mujoco>
+"""
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    # Initialize the delay buffer with known values
+    # sensor_history[i, 0] = nsample, sensor_history[i, 1] = interp
+    nhistory = model.sensor_history[0, 0]
+    dim = model.sensor_dim[0]
+    self.assertEqual(nhistory, 3)
+    self.assertEqual(dim, 3)  # accelerometer has dim=3
+    times = np.array([0.0, 0.01, 0.02])
+    values = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=np.float64)
+    mujoco.mj_initSensorHistory(model, data, 0, times, values, phase=0.0)
+
+    # Read back a value using zero-order hold
+    # mj_readSensor auto-subtracts delay: lookup_time = read_time - delay
+    # delay = 0.01, so:
+    #   read_time=0.02 -> lookup at 0.01 -> value [4, 5, 6]
+    result = np.zeros(dim)
+    mujoco.mj_readSensor(model, data, 0, 0.02, result, interp=0)
+    # ZOH returns value at t=0.01
+    np.testing.assert_array_equal(result, [4, 5, 6])
+
+    # Test with times=None (uses existing timestamps)
+    new_values = np.array([
+        [10, 11, 12], [13, 14, 15], [16, 17, 18]], dtype=np.float64)
+    mujoco.mj_initSensorHistory(model, data, 0, None, new_values, phase=0.0)
+    # read_time=0.02 -> lookup at 0.01 -> value [13, 14, 15]
+    mujoco.mj_readSensor(model, data, 0, 0.02, result, interp=0)
+    np.testing.assert_array_equal(result, [13, 14, 15])
+
+    # Test dimension validation errors
+    with self.assertRaises(TypeError):
+      # wrong result size
+      mujoco.mj_readSensor(model, data, 0, 0.02, np.zeros(2), interp=0)
+    with self.assertRaises(TypeError):
+      # wrong times size
+      mujoco.mj_initSensorHistory(model, data, 0, np.zeros(2), values, 0.0)
+    with self.assertRaises(TypeError):
+      # wrong values rows
+      mujoco.mj_initSensorHistory(model, data, 0, times, np.zeros((4, 3)), 0.0)
+    with self.assertRaises(TypeError):
+      # wrong values cols
+      mujoco.mj_initSensorHistory(model, data, 0, times, np.zeros((3, 2)), 0.0)
+
+  def test_init_sensor_history_pedagogical(self):
+    # A framequat sensor reports body orientation as a unit quaternion.
+    # Quaternions are never zero: the identity quaternion is [1, 0, 0, 0].
+    # This test demonstrates why mj_initSensorHistory is needed: after
+    # mj_makeData, the history buffer is filled with zeros, which is invalid.
+    xml = r"""
+<mujoco>
+  <worldbody>
+    <body name="body">
+      <freejoint/>
+      <geom type="sphere" size="0.1"/>
+    </body>
+  </worldbody>
+  <sensor>
+    <framequat name="quat" objtype="body" objname="body" delay="0.01" nsample="5"/>
+  </sensor>
+</mujoco>
+"""
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    dim = model.sensor_dim[0]
+    nsample = model.sensor_history[0, 0]
+    delay = model.sensor_delay[0]
+    self.assertEqual(dim, 4)
+    self.assertEqual(nsample, 5)
+    self.assertEqual(delay, 0.01)
+
+    # After mj_makeData, reading from the delay buffer gives all zeros.
+    # For a quaternion sensor, this is invalid data.
+    result = np.zeros(dim)
+    mujoco.mj_readSensor(model, data, 0, delay, result, interp=0)
+    np.testing.assert_array_equal(result, [0, 0, 0, 0])
+
+    # To get valid sensor values, we temporarily set delay to 0 so that
+    # mj_forward populates sensordata directly (without using the delay
+    # buffer), then restore the original delay value.
+    saved_delay = model.sensor_delay.copy()
+    model.sensor_delay[:] = 0
+    mujoco.mj_forward(model, data)
+    model.sensor_delay[:] = saved_delay
+
+    # Now sensordata contains the valid identity quaternion.
+    np.testing.assert_array_equal(data.sensordata, [1, 0, 0, 0])
+
+    # Use mj_initSensorHistory to fill the buffer with valid quaternion values.
+    # Passing None for times keeps the existing timestamps in the buffer.
+    values = np.tile(data.sensordata, (nsample, 1))
+    mujoco.mj_initSensorHistory(model, data, 0, None, values, phase=0.0)
+
+    # Now reading from the delay buffer gives the valid identity quaternion.
+    mujoco.mj_readSensor(model, data, 0, delay, result, interp=0)
+    np.testing.assert_array_equal(result, [1, 0, 0, 0])
+
+  def test_poly_stiffness(self):
+    xml = r"""
+<mujoco>
+  <worldbody>
+    <body>
+      <geom type="sphere" size="0.1"/>
+      <joint name="slide" type="slide" stiffness="1 2 3"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    self.assertEqual(model.jnt_stiffness[0], 1)
+    np.testing.assert_array_equal(
+        model.jnt_stiffnesspoly[0], [2, 3])
+
+    x = 0.5
+    data.qpos[0] = x
+    mujoco.mj_forward(model, data)
+    expected = -(1*x + 2*x*abs(x) + 3*x**3)
+    np.testing.assert_allclose(data.qfrc_spring[0], expected)
 
   def _assert_attributes_equal(self, actual_obj, expected_obj, attr_to_compare):
     for name in attr_to_compare:

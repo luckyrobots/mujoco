@@ -15,7 +15,10 @@
 #include "user/user_api.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <iterator>
@@ -31,6 +34,7 @@
 #include "user/user_cache.h"
 #include "user/user_model.h"
 #include "user/user_objects.h"
+#include "user/user_resource.h"
 #include "user/user_util.h"
 
 namespace {
@@ -63,7 +67,128 @@ mjSpec* mj_copySpec(const mjSpec* s) {
   return &modelC->spec;
 }
 
+// parse file into spec
+mjSpec* mj_parse(const char* filename, const char* content_type,
+                 const mjVFS* vfs, char* error, int error_sz) {
+  mjVFS local_vfs;
+  mujoco::user::Cleanup cleanup;
 
+  // early exit for existing XML workflow
+  auto filepath = mujoco::user::FilePath(filename);
+  if (filepath.Ext() == ".xml" ||
+      filepath.Ext() == ".urdf" ||
+      (content_type && std::strcmp(content_type, "text/xml") == 0)) {
+    return mj_parseXML(filename, vfs, error, error_sz);
+  }
+
+  // If no VFS is provided, we'll create our own temporary one for the duration
+  // of this function.
+  if (vfs == nullptr) {
+    mj_defaultVFS(&local_vfs);
+    cleanup += [&local_vfs](){ mj_deleteVFS(&local_vfs); };
+
+    vfs = &local_vfs;
+  }
+
+  mjResource* resource = mju_openResource("", filename, vfs, error, error_sz);
+  // If we are unable to open the resource, we will create our own resource with
+  // just the filename. This allows decoders that rely on other systems to fetch
+  // their content to function without a custom resource provider.
+  // For example, USD may use identifiers to assets that are strictly in memory
+  // or that are fetched on a need-be basis via URI.
+  if (resource) {
+    cleanup += [resource](){ mju_closeResource(resource); };
+  } else {
+    resource = (mjResource*) mju_malloc(sizeof(mjResource));
+    cleanup += [resource](){ if (resource) mju_free(resource); };
+
+    if (resource == nullptr) {
+      if (error) {
+        strncpy(error, "could not allocate memory", error_sz);
+        error[error_sz - 1] = '\0';
+      }
+      return nullptr;
+    }
+
+    // clear out resource
+    memset(resource, 0, sizeof(mjResource));
+
+    // make space for filename
+    std::string fullname = filename;
+    std::size_t n = fullname.size();
+    resource->name = (char*) mju_malloc(sizeof(char) * (n + 1));
+    cleanup += [resource](){ if (resource) mju_free(resource->name); };
+
+    if (resource->name == nullptr) {
+      if (error) {
+        strncpy(error, "could not allocate memory", error_sz);
+        error[error_sz - 1] = '\0';
+      }
+      return nullptr;
+    }
+    memcpy(resource->name, fullname.c_str(), sizeof(char) * (n + 1));
+  }
+
+  mjSpec* spec = mju_decodeResource(resource, content_type, vfs);
+  if (spec == nullptr) {
+    if (error) {
+      strncpy(error, "could not decode content", error_sz);
+      error[error_sz - 1] = '\0';
+    }
+  }
+  return spec;
+}
+
+// encode spec/model to file
+int mj_encode(const mjSpec* s, const mjModel* m, const char* filename,
+              const char* content_type, const mjVFS* vfs, char* error,
+              int error_sz) {
+  const mjpEncoder* encoder = mjp_findEncoder(filename, content_type);
+  if (!encoder) {
+    if (error) {
+      strncpy(error, "no encoder found", error_sz);
+      error[error_sz - 1] = '\0';
+    }
+    return -1;
+  }
+
+  mjResource resource;
+  memset(&resource, 0, sizeof(resource));
+  resource.name = const_cast<char*>(filename);
+
+  const int nbytes = encoder->encode(s, m, vfs, &resource);
+  if (nbytes < 0 || !resource.data) {
+    if (error) {
+      strncpy(error, "encoder failed", error_sz);
+      error[error_sz - 1] = '\0';
+    }
+    return -1;
+  }
+
+  FILE* fp = fopen(filename, "wb");
+  if (!fp) {
+    std::free(resource.data);
+    if (error) {
+      strncpy(error, "could not open file for writing", error_sz);
+      error[error_sz - 1] = '\0';
+    }
+    return -1;
+  }
+
+  const std::size_t written = fwrite(resource.data, 1, nbytes, fp);
+  fclose(fp);
+  encoder->close_resource(&resource);
+
+  if (static_cast<int>(written) != nbytes) {
+    if (error) {
+      strncpy(error, "failed to write all bytes to file", error_sz);
+      error[error_sz - 1] = '\0';
+    }
+    return -1;
+  }
+
+  return nbytes;
+}
 
 // compile model
 mjModel* mj_compile(mjSpec* s, const mjVFS* vfs) {
@@ -349,8 +474,12 @@ int mj_copyBack(mjSpec* s, const mjModel* m) {
 // remove body from mjSpec, return 0 on success
 int mjs_delete(mjSpec* s, mjsElement* element) {
   mjCModel* model = static_cast<mjCModel*>(s->element);
+  if (model->IsAttached()) {
+    model->SetError(mjCError(nullptr, "Cannot delete element from an attached mjSpec."));
+    return -1;
+  }
   if (!element) {
-    model->SetError(mjCError(0, "Element is null."));
+    model->SetError(mjCError(nullptr, "Element is null."));
     return -1;
   }
   try {
@@ -996,9 +1125,178 @@ const char* mjs_setToAdhesion(mjsActuator* actuator, double gain) {
 
 
 
+const char* mjs_setToDCMotor(mjsActuator* actuator, double motorconst[2], double resistance,
+                             double nominal[3], double saturation[3], double inductance[2],
+                             double cogging[3], double controller[6], double thermal[6],
+                             double lugre[5], int input_mode) {
+  double R      = resistance;                      // electrical resistance
+  double Kt     = motorconst ? motorconst[0] : 0;  // torque constant
+  double Ke     = motorconst ? motorconst[1] : 0;  // back-EMF constant
+  double vn     = nominal ? nominal[0] : 0;        // nominal voltage
+  double tau0   = nominal ? nominal[1] : 0;        // stall torque
+  double omega0 = nominal ? nominal[2] : 0;        // no-load speed
+
+  // derive Ke from nominal: omega0 = vn*Ke / (Ke^2 + R*B)
+  if (vn > 0 && Ke <= 0 && omega0 > 0) {
+    // viscous damping (linear)
+    double B = actuator->damping[0];
+
+    if (B > 0 && R > 0) {
+      // R known: solve quadratic Ke^2*omega0 - Ke*vn + R*B*omega0 = 0
+      double disc = vn*vn - 4*R*B*omega0*omega0;
+      Ke = disc > 0 ? (vn + sqrt(disc)) / (2*omega0) : vn / omega0;
+    } else if (B > 0 && tau0 > 0) {
+      // R from nominal (tau0 = Ke*vn/R, so R = Ke*vn/tau0)
+      // substituting into omega0 = vn*Ke/(Ke^2 + R*B):
+      //   omega0 = vn/(Ke + vn*B/tau0)  =>  Ke = vn/omega0 - vn*B/tau0
+      double Ke_exact = vn / omega0 - vn*B / tau0;
+      Ke = Ke_exact > 0 ? Ke_exact : vn / omega0;
+    } else {
+      // B = 0 or insufficient data for B-correction: omega0 = vn*Ke/Ke^2 = vn/Ke
+      Ke = vn / omega0;
+    }
+  }
+
+  // resolve effective motor constant K from [Kt, Ke]
+  double K = (Kt > 0 && Ke > 0) ? sqrt(Kt * Ke) :
+             (Kt > 0)           ? Kt : Ke;
+
+  // derive R from nominal: tau0 = K*vn/R
+  if (R == 0 && vn > 0 && tau0 > 0 && K > 0) {
+    R = K * vn / tau0;
+  }
+
+  if (K <= 0) return "DC motor: motor constant K must be positive";
+  if (R <= 0) return "DC motor: resistance R must be positive";
+
+  // set types
+  actuator->dyntype = mjDYN_DCMOTOR;
+  actuator->gaintype = mjGAIN_DCMOTOR;
+  actuator->biastype = mjBIAS_DCMOTOR;
+
+  // gainprm: [R, K, alpha, T0]
+  actuator->gainprm[0] = R;
+  actuator->gainprm[1] = K;
+
+  // controller parameters: gainprm[4:6] for kp, ki, kd
+  actuator->gainprm[4] = controller ? controller[0] : 0;  // kp
+  actuator->gainprm[5] = controller ? controller[1] : 0;  // ki
+  actuator->gainprm[6] = controller ? controller[2] : 0;  // kd
+
+  // controller parameters: dynprm[7,8] for slewmax, Imax
+  actuator->dynprm[7] = controller ? controller[3] : 0;  // slewmax
+  actuator->dynprm[8] = controller ? controller[4] : 0;  // Imax
+
+  // controller parameters: gainprm[7] for v_max
+  if (controller && controller[5] > 0) {
+    actuator->gainprm[7] = controller[5];  // v_max
+  }
+
+  // saturation -> forcerange
+  if (saturation && (saturation[0] > 0 || saturation[1] > 0)) {
+    double tau_max = saturation[0];
+    if (tau_max == 0 && saturation[1] > 0) {
+      tau_max = K * saturation[1];  // tau_max = K * i_max
+    }
+    actuator->forcerange[0] = -tau_max;
+    actuator->forcerange[1] = tau_max;
+    actuator->forcelimited = 1;
+  }
+
+  // saturation: [tau_max, i_max, (di/dt)_max]
+  if (saturation && saturation[2] > 0) {
+    actuator->dynprm[1] = saturation[2];  // (di/dt)_max
+  }
+
+  // cogging: [amplitude, periodicity, phase] -> biasprm[0:3]
+  actuator->biasprm[0] = cogging ? cogging[0] : 0;  // amplitude
+  actuator->biasprm[1] = cogging ? cogging[1] : 0;  // periodicity
+  actuator->biasprm[2] = cogging ? cogging[2] : 0;  // phase
+
+  // count activation variables: slot order is slew, integral, temperature, bristle, current
+  int actdim = 0;
+
+  // inductance: [L, te]
+  if (inductance && inductance[0] < 0) return "DC motor: inductance must be non-negative";
+  if (inductance && inductance[1] < 0) return "DC motor: electrical time constant must be non-negative";
+  double te = (inductance && inductance[0] > 0) ? inductance[0] / R : (inductance ? inductance[1] : 0);
+  actuator->dynprm[0] = te;
+  if (te > 0) {
+    actdim++;
+  }
+
+  // controller states: slew rate limiting
+  if (controller && controller[3] > 0) {  // slewmax
+    actdim++;
+  }
+
+  // controller states: integral
+  if (controller && controller[1] > 0) {  // ki
+    actdim++;
+  }
+
+  // thermal -> temperature activation
+  if (thermal && (thermal[0] > 0 || thermal[1] > 0 || thermal[2] > 0)) {
+    double RT    = thermal[0];   // thermal resistance
+    double C     = thermal[1];   // thermal capacitance
+    double tth   = thermal[2];   // thermal time constant
+    double alpha = thermal[3];   // temperature coefficient
+    double T0    = thermal[4];   // reference temperature
+    double Ta    = thermal[5];   // ambient temperature
+
+    if (tth > 0 && RT > 0 && C == 0) {
+      C = tth / RT;
+    } else if (tth > 0 && C > 0 && RT == 0) {
+      RT = tth / C;
+    } else if (tth == 0 && RT > 0 && C > 0) {
+      tth = RT * C;
+    }
+
+    if (RT <= 0) return "DC motor: thermal resistance must be positive";
+    if (C <= 0) return "DC motor: thermal capacitance must be positive";
+
+    actuator->dynprm[2]  = RT;
+    actuator->dynprm[3]  = C;
+    actuator->dynprm[4]  = Ta;
+    actuator->gainprm[2] = alpha;
+    actuator->gainprm[3] = T0;
+    actdim++;
+  }
+
+  // lugre: {stiffness, damping, coulomb, static, stribeck}
+  if (lugre && lugre[0] > 0) {
+    actuator->dynprm[5] = lugre[0];    // stiffness -> sigma0
+    actuator->dynprm[6] = lugre[1];    // damping   -> sigma1
+    actuator->biasprm[3] = lugre[2];   // coulomb   -> tau_c
+    actuator->biasprm[4] = lugre[3];   // static    -> tau_s
+    actuator->biasprm[5] = lugre[4];   // stribeck  -> omega_s
+    actdim++;
+  }
+
+  // set input mode and activation dimension
+  actuator->gainprm[8] = input_mode;
+  actuator->actdim = actdim;
+
+  // enforce actlimited = 0; homogeneous bounds are invalid across DC motor states
+  actuator->actlimited = 0;
+
+  // DC motor always uses actearly
+  actuator->actearly = 1;
+
+  return "";
+}
+
+
+
 // get spec from body
 mjSpec* mjs_getSpec(mjsElement* element) {
   return &(static_cast<mjCBase*>(element)->model->spec);
+}
+
+
+
+mjsCompiler* mjs_getCompiler(mjsElement* element) {
+  return static_cast<mjCBase*>(element)->compiler;
 }
 
 
@@ -1205,7 +1503,6 @@ void mjs_deleteUserValue(mjsElement* element, const char* key) {
 int mjs_sensorDim(const mjsSensor* sensor) {
   switch (sensor->type) {
   case mjSENS_TOUCH:
-  case mjSENS_RANGEFINDER:
   case mjSENS_JOINTPOS:
   case mjSENS_JOINTVEL:
   case mjSENS_TENDONPOS:
@@ -1266,6 +1563,18 @@ int mjs_sensorDim(const mjsSensor* sensor) {
     return 3 * static_cast<const mjCMesh*>(
                    static_cast<mjCSensor*>(sensor->element)->get_obj())
                    ->nvert();
+
+  case mjSENS_RANGEFINDER:
+    {
+      int size = mju_raydataSize(sensor->intprm[0]);
+      int num_rays = 1;
+      if (sensor->objtype == mjOBJ_CAMERA) {
+        const mjCCamera* camera = static_cast<const mjCCamera*>(
+            static_cast<mjCSensor*>(sensor->element)->get_obj());
+        num_rays = camera->spec.resolution[0] * camera->spec.resolution[1];
+      }
+      return size * num_rays;
+    }
 
   case mjSENS_USER:
     return sensor->dim;
@@ -1864,12 +2173,15 @@ void mj_clearCache(mjCache* cache) {
 
 // get the internal asset cache used by the compiler
 mjCache* mj_getCache() {
-  static mjCache cache_cwrapper = {0};
-  // mjCCache is not trivially destructible and so the global cache needs to
-  // allocated on the heap
-  if constexpr (kGlobalCacheSize != 0) {
-    static mjCCache* cache = new(std::nothrow) mjCCache(kGlobalCacheSize);
-    cache_cwrapper.impl_ = cache->Capacity() > 0 ? cache : nullptr;
-  }
+  static mjCache cache_cwrapper = []() {
+    mjCache c = {0};
+    // mjCCache is not trivially destructible and so the global cache needs to
+    // allocated on the heap
+    if constexpr (kGlobalCacheSize != 0) {
+      static mjCCache* cache = new (std::nothrow) mjCCache(kGlobalCacheSize);
+      c.impl_ = cache->Capacity() > 0 ? cache : nullptr;
+    }
+    return c;
+  }();
   return &cache_cwrapper;
 }

@@ -20,17 +20,16 @@
 #include <gtest/gtest.h>
 #include <mujoco/mjmodel.h>
 #include <mujoco/mujoco.h>
-#include "test/fixture.h"
+#include "src/engine/engine_collision_convex.h"
 #include "src/engine/engine_collision_primitive.h"
 #include "src/engine/engine_util_misc.h"
-
+#include "test/fixture.h"
 
 namespace mujoco {
 namespace {
 
 using MjCollisionBoxTest = MujocoTest;
 using ::testing::NotNull;
-using ::testing::DoubleNear;
 
 static const char* const kBad0FilePath =
     "engine/testdata/collision_box/boxbox_bad0.xml";
@@ -95,7 +94,7 @@ TEST_F(MjCollisionBoxTest, BadContacts) {
       }
 
       // expect some contacts to have been removed
-      EXPECT_LT(nmatched, num) << local_path;
+      EXPECT_EQ(nmatched, num) << local_path;
 
       // get box info
       const mjtNum* pos1 =  data->geom_xpos  + 3 * g1;
@@ -197,7 +196,7 @@ TEST_F(MjCollisionBoxTest, DuplicateContacts) {
     }
 
     // expect some contacts to have been removed
-    EXPECT_LT(nmatched, num);
+    EXPECT_EQ(nmatched, num);
 
     // loop over raw contacts, find removed
     for (int i = 0; i < num; i++) {
@@ -266,13 +265,42 @@ TEST_F(MjCollisionBoxTest, BoxSphere) {
     data->qpos[2] = z;
     mj_forward(model, data);
     EXPECT_EQ(data->ncon, 2);
-    EXPECT_THAT(data->contact[0].dist, DoubleNear(data->contact[1].dist, 1e-8));
+    EXPECT_THAT(data->contact[0].dist,
+                MjNear(data->contact[1].dist, 1e-8, 1e-6));
   }
 
   mj_deleteData(data);
   mj_deleteModel(model);
 }
 
+
+TEST_F(MjCollisionBoxTest, BoxBoxContactDistance) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom type="box" size="1 1 1"/>
+      <geom type="box" size="1 1 1" pos="0 0 1.5"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  mjModel* model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+
+  mjData* data = mj_makeData(model);
+  mj_kinematics(model, data);
+  mjContact contact[9];
+
+  for (mjfCollision collision : {mjc_BoxBox, mjc_Convex}) {
+    int n = collision(model, data, contact, 0, 1, 0.0);
+    for (int i = 0; i < n; i++) {
+      EXPECT_NEAR(contact[i].dist, -0.5, MjTol(1e-8, 1e-6));
+    }
+  }
+
+  mj_deleteData(data);
+  mj_deleteModel(model);
+}
 
 }  // namespace
 }  // namespace mujoco

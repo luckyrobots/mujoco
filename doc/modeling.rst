@@ -263,18 +263,21 @@ specified by the user, the frame is not rotated.
 Solver parameters
 ~~~~~~~~~~~~~~~~~
 
-The solver :ref:`Parameters <soParameters>` section of the Computation chapter explained the mathematical and
-algorithmic meaning of the quantities :math:`d, b, k` which determine the behavior of the constraints in MuJoCo. Here we
-explain how to set them. Setting is done indirectly, through the attributes :at:`solref` and :at:`solimp` which are
-available in all MJCF elements involving constraints. These parameters can be adjusted per constraint, or per defaults
-class, or left undefined -- in which case MuJoCo uses the internal defaults shown below. Note also the override mechanism
-available in :ref:`option <option>`; it can be used to change all contact-related solver parameters at runtime, so as to
-experiment interactively with parameter settings or implement continuation methods for numerical optimization.
+The constraint solver finds forces that satisfy soft constraints, parameterized by three quantities: the *impedance*
+:math:`d` (how strongly to enforce the constraint), *stiffness* :math:`k`, and *damping* :math:`b` (how to respond to
+violations). These are described mathematically in the :ref:`Parameters <soParameters>` section of the Computation
+chapter. Here we explain how to set them. Setting is done indirectly, through the attributes :at:`solref` and
+:at:`solimp` which are available in all MJCF elements involving constraints. These parameters can be adjusted per
+constraint, or per defaults class, or left undefined -- in which case MuJoCo uses the internal defaults shown below.
+Note also the override mechanism available in :ref:`option <option>`; it can be used to change all contact-related
+solver parameters at runtime, so as to experiment interactively with parameter settings or implement continuation
+methods for numerical optimization.
 
 Here we focus on a single scalar constraint. Using slightly different notation from the Computation chapter, let
 :math:`\ac` denote the acceleration, :math:`v` the velocity, :math:`r` the position or residual (defined as 0 in
 friction dimensions), :math:`k` and :math:`b` the stiffness and damping of the virtual spring used to define the
-reference acceleration :math:`\ar = -b v - k r`. Let :math:`d` be the constraint impedance, and :math:`\au` the
+reference acceleration :math:`\ar = -b v - k r` (see :eq:`eq:aref`).
+Let :math:`d` be the constraint impedance, and :math:`\au` the
 acceleration in the absence of constraint force. Our earlier analysis revealed that the dynamics in constraint space are
 approximately
 
@@ -300,7 +303,7 @@ We begin by explaining the constraint impedance :math:`d`.
    at rest. Impedance is set using the :at:`solimp` attribute.
 
 Recall that :math:`d` must lie between 0 and 1; internally MuJoCo clamps it to the range [:ref:`mjMINIMP mjMAXIMP
-<glNumeric>`] which is currently set to [0.0001 0.9999]. It causes the solver to interpolate between the unforced
+<glNumericEngine>`] which is currently set to [0.0001 0.9999]. It causes the solver to interpolate between the unforced
 acceleration :math:`\au` and reference acceleration :math:`\ar`. The user can set :math:`d` to a constant, or
 take advantage of its interpolating property and make it position-dependent, i.e., a function of the constraint
 violation :math:`r`. Position-dependent impedance can be used to model soft contact layers around objects, or define
@@ -344,8 +347,7 @@ of the function :math:`d(r)` is determined by the element-specific parameter vec
    constraint becomes active; for contacts this margin is :ref:`margin<body-geom-margin>`-:ref:`gap<body-geom-gap>`.
    Limit and contact constraints are active when :math:`r < 0` (penetration).
 
-   For friction loss or friction dimensions of elliptic cones, the violation :math:`r` is identically zero, so
-   only :math:`d(0)` affects these constraints, all other :at:`solimp` values are ignored.
+   For frictional constraints, see :ref:`Friction<CSolverFriction>`.
 
    .. _solimp0:
 
@@ -385,25 +387,27 @@ There are two formats for this attribute, determined by the sign of the numbers.
 specification is considered to be in the :math:`(\text{timeconst}, \text{dampratio})` format. If negative it is in the
 "direct" :math:`(-\text{stiffness}, -\text{damping})` format.
 
-Frictional constraints whose residual is identically 0 have first-order dynamics and the mass-spring-damper analysis
-below does not apply. In this case the time constant is the rate of exponential decay of the constraint velocity,
-and the damping ratio is ignored. Equivalently, in the direct format, the :math:`\text{stiffness}` is ignored.
+For frictional constraints, the mass-spring-damper analysis below does not directly apply;
+see :ref:`Friction<CSolverFriction>`.
 
 **solref :** real(2), "0.02 1"
    We first describe the default, positive-value format where the two numbers are
    :math:`(\text{timeconst}, \text{dampratio})`.
 
+   .. _soRefScaling:
+
    The idea here is to re-parameterize the model in terms of the time constant and damping ratio of a mass-spring-damper
-   system. By "time constant" we mean the inverse of the natural frequency times the damping ratio. In this case we use
-   a mass-spring-damper model to compute :math:`k, b` after suitable scaling. Note that the effective stiffness
-   :math:`d(r) \cdot k` and damping :math:`d(r) \cdot b` are scaled by the impedance :math:`d(r)` which is a function of
-   the distance :math:`r`. Thus we cannot always achieve the specified mass-spring-damper properties, unless we
-   completely undo the scaling by :math:`d`. But the latter is undesirable because it would ruin the interpolating
-   property, in particular the limit :math:`d=0` would no longer disable the constraint. Instead we scale the stiffness
-   and damping so that the damping ratio remains constant, while the time constant increases when :math:`d(r)` gets
-   smaller. The scaling formulas are
+   system. By "time constant" we mean the inverse of the natural frequency times the damping ratio. Now recall that the
+   products :math:`d \cdot k` and :math:`d \cdot b` in :eq:`eq:constraint` are the effective stiffness and damping in
+   constraint space. Because the impedance :math:`d(r)` varies with the
+   position residual :math:`r`, we cannot achieve constant mass-spring-damper properties; completely undoing the scaling
+   by :math:`d` is undesirable because the limit :math:`d = 0` would no longer disable the constraint. Instead, we
+   absorb one factor of :math:`d(r)` into :math:`k` (but not into :math:`b`), so that the damping ratio remains constant
+   while the time constant scales with :math:`d(r)`. The formulas are
 
    .. math::
+      :label: eq:solref_standard
+
       \begin{aligned}
       b &= 2 / (d_\text{width}\cdot \text{timeconst}) \\
       k &= d(r) / (d_\text{width}^2 \cdot \text{timeconst}^2 \cdot \text{dampratio}^2) \\
@@ -414,7 +418,7 @@ and the damping ratio is ignored. Equivalently, in the direct format, the :math:
    can go unstable. This is enforced internally, unless the :ref:`refsafe<option-flag-refsafe>` attribute of :ref:`flag
    <option-flag>` is set to false. The :math:`\text{dampratio}` parameter would normally be set to 1, corresponding to
    critical damping. Smaller values result in under-damped or bouncy constraints, while larger values result in
-   over-damped constraints. Combining the above formula with :eq:`eq:constraint`, we can derive the following result.
+   over-damped constraints. Combining :eq:`eq:solref_standard` with :eq:`eq:constraint`, we can derive the following
    If the reference acceleration is given using the positive number format and the impedance is constant
    :math:`d = d_0 = d_\text{width}`, then the penetration depth at rest is
 
@@ -427,12 +431,14 @@ and the damping ratio is ignored. Equivalently, in the direct format, the :math:
    interact. The scaling formulas are
 
    .. math::
+      :label: eq:solref_direct
+
       \begin{aligned}
       b &= \text{damping} / d_\text{width} \\
       k &= \text{stiffness} \cdot d(r) / d_\text{width}^2 \\
       \end{aligned}
 
-   Similarly to the above derivation, if the reference acceleration is given using the negative number format and the
+   Similarly to the derivation following :eq:`eq:solref_standard`, if the reference acceleration is given using the
    impedance is constant, then the penetration depth at rest is
 
    .. math::
@@ -448,6 +454,24 @@ and the damping ratio is ignored. Equivalently, in the direct format, the :math:
 
    A :math:`\text{dampratio}` of 1 in the positive-value format is equivalent to
    :math:`\text{damping} = 2 \sqrt{ \text{stiffness} }` in the direct format.
+
+.. _CSolverFriction:
+
+Friction
+^^^^^^^^
+
+Friction loss constraints (in joints and tendons) and friction dimensions of elliptic contact cones have zero position
+violation: :math:`r \equiv 0`. This simplifies the constraint model (see also :ref:`soParameters`):
+
+- The **impedance** is always :math:`d_0` (:at:`solimp[0]`), since :math:`d(r)` is evaluated at :math:`r=0`.
+  The sigmoid shape parameters (:math:`\text{width}`, :math:`\text{midpoint}`, :math:`\text{power}`) have no effect.
+- The dynamics are **first-order** (exponential decay of constraint velocity, no spring): the stiffness :math:`k` is
+  always 0.
+- In the standard :at:`solref` format, the time constant controls exponential velocity decay. The damping ratio is
+  ignored (it only appears in the :math:`k` formula).
+- In the direct :at:`solref` format, the damping (second value) is used but the stiffness (first value) is ignored.
+- :math:`d_\text{width}` (:at:`solimp[1]`) still affects the damping :math:`b` as a scaling denominator
+  (:eq:`eq:solref_standard`, :eq:`eq:solref_direct`), even though it does not affect the impedance.
 
 .. _CContact:
 
@@ -473,7 +497,7 @@ are as follows:
    in mjData.contact actually has all 5 of them, even if condim is less than 6 and not all coefficients are used. In
    contrast, geoms have only 3 friction coefficients: tangential (same for both axes), torsional, rolling (same for both
    axes). Each of these 3D vectors of friction coefficients is expanded into a 5D vector of friction coefficients by
-   replicating the tangetial and rolling components. See the :ref:`Contact<coContact>` section in the Computation
+   replicating the tangential and rolling components. See the :ref:`Contact<coContact>` section in the Computation
    chapter for an intuitive description of the semantics of tangential, torsional and rolling coefficients.
 
    The contact friction coefficients are then computed according to the following rule: if one of the two geoms has
@@ -490,7 +514,7 @@ are as follows:
    an individual geom. This is why MuJoCo does not allow anisotropic friction in the individual geom specifications, but
    only in the explicit contact pair specifications.
 **margin**, **gap**
-   The maximum of the two geom margins (or gaps respectively) is used. The geom priority is ignored here, because the
+   The sum of the two geom margins (or gaps respectively) is used. The geom priority is ignored here, because the
    margin and gap are distance properties and a one-sided specification makes little sense.
 
 .. _solmixing:
@@ -561,11 +585,11 @@ Solver settings
 ~~~~~~~~~~~~~~~
 
 The computation of constraint forces and constrained accelerations involves solving an optimization problem
-numerically. MuJoCo has three algorithms for solving this optimization problem: CG, Newton, PGS. Each of them can be
+numerically. MuJoCo has three algorithms for solving this optimization problem: Newton, CG, PGS. Each of them can be
 applied to a pyramidal or elliptic model of the friction cones, and with dense or sparse constraint Jacobians. In
 addition, the user can specify the maximum number of iterations, and tolerance level which controls early termination.
-There is also a second Noslip solver, which is a post-processing step enabled by specifying a positive number of
-noslip iterations. All these algorithm settings can be specified in the :ref:`option <option>` element.
+There is also a NoSlip solver, which is a post-processing step enabled by specifying a positive number of NoSlip
+iterations. All these algorithm settings can be specified in the :ref:`option <option>` element.
 
 The default settings work well for most models, but in some cases it is necessary to tune the algorithm. The best way to
 do this is to experiment with the relevant settings and use the visual profiler in :ref:`simulate.cc <saSimulate>`,
@@ -599,8 +623,8 @@ general guidelines and observations:
    with large mass ratios or other model properties causing poor conditioning, PGS convergence tends to be rather slow.
    Keep in mind that PGS performs sequential updates, and therefore breaks symmetry in systems where the physics should
    be symmetric. In contrast, CG and Newton perform parallel updates and preserve symmetry.
--  The Noslip solver is a modified PGS solver. It is executed as a post-processing step after the main solver (which can
-   be Newton, CG or PGS). The main solver updates all unknowns. In contrast, the Noslip solver updates only the
+-  The NoSlip solver is a modified PGS solver. It is executed as a post-processing step after the main solver (which can
+   be Newton, CG or PGS). The main solver updates all unknowns. In contrast, the NoSlip solver updates only the
    constraint forces in friction dimensions, and ignores constraint regularization. This has the effect of suppressing
    the drift or slip caused by the soft-constraint model. However, this cascade of optimization steps is no longer
    solving a well-defined optimization problem (or any other problem); instead it is just an adhoc mechanism. While it
@@ -608,9 +632,9 @@ general guidelines and observations:
    contacts.
 -  PGS has a setup cost (in terms of CPU time) for computing the inverse inertia in constraint space. Similarly, Newton
    has a setup cost for the initial factorization of the Hessian, and incurs additional factorization costs depending on
-   how many factorization updates are needed later. CG does not have any setup cost. Since the Noslip solver is also a
-   PGS solver, the PGS setup cost will be paid whenever Noslip is enabled, even if the main solver is CG or Newton. The
-   setup operation for the main PGS and Noslip PGS is the same, thus the setup cost is paid only once when both are
+   how many factorization updates are needed later. CG does not have any setup cost. Since the NoSlip solver is also a
+   PGS solver, the PGS setup cost will be paid whenever NoSlip is enabled, even if the main solver is CG or Newton. The
+   setup operation for the main PGS and NoSlip PGS is the same, thus the setup cost is paid only once when both are
    enabled.
 
 .. _CActuators:
@@ -659,7 +683,8 @@ independently. The full functionality can be accessed via the XML element :ref:`
 the user to create a variety of custom actuators. In addition, MJCF provides shortcuts for configuring common actuators.
 This is done via the XML elements :ref:`motor <actuator-motor>`, :ref:`position <actuator-position>`, :ref:`velocity
 <actuator-velocity>`, :ref:`intvelocity <actuator-intvelocity>`, :ref:`damper<actuator-damper>`,
-:ref:`cylinder<actuator-cylinder>`, :ref:`muscle <actuator-muscle>`, and :ref:`adhesion <actuator-adhesion>`. These are
+:ref:`cylinder<actuator-cylinder>`, :ref:`muscle <actuator-muscle>`, :ref:`adhesion <actuator-adhesion>`, and
+:ref:`dcmotor<actuator-dcmotor>`. These are
 *not* separate model elements. Internally MuJoCo supports only one actuator type -which is why when an MJCF model is
 saved all actuators are written as :el:`general`. Shortcuts create general actuators implicitly, set their attributes to
 suitable values, and expose a subset of attributes with possibly different names. For example, :el:`position` creates a
@@ -742,9 +767,9 @@ Unlike all other fields of mjModel which are exact physical or geometric quantit
 approximation. Intuitively it corresponds to the minimum and maximum length that the actuator's transmission can reach
 over all "feasible" configurations of the model. However MuJoCo constraints are soft, so in principle any
 configuration is feasible. Yet we need a well-defined range for muscle modeling. There are three ways to set this
-range: (1) provide it explicitly using the new attribute lengthrange available in all actuators; (2) copy it from the
+range: (1) provide it explicitly using the attribute lengthrange available in all actuators; (2) copy it from the
 limits of the joint or tendon to which the actuator is attached; (3) compute it automatically, as explained in the
-rest of this section. There are many options here, controlled with the new XML element
+rest of this section. There are many options here, controlled with the XML element
 :ref:`lengthrange <compiler-lengthrange>`.
 
 Automatic computation of actuator length ranges is done at compile time, and the results are stored in
@@ -1081,18 +1106,183 @@ copied in the array mjData.sensordata and are available for user processing.
 
 Here we describe the XML attributes common to all sensor types, so as to avoid repetition later.
 
+.. _sensor-name:
+
 :at:`name`: :at-val:`string, optional`
    Name of the sensor.
+
+.. _sensor-noise:
+
 :at:`noise`: :at-val:`real, "0"`
-   The standard deviation of the noise model of this sensor. In versions prior to 3.1.4, this would lead to noise being
-   added to the sensors. In release 3.1.4 this feature was removed, see :doc:`3.1.4 changelog <changelog>` for a
-   detailed justification. As of subsequent versions, this attrbute serves as a convenient location for saving standard
-   deviation information for later use.
+   The standard deviation of the noise model of this sensor. This attribute does not affect the simulation; it serves as
+   a convenient location for storing standard deviation information for later use.
+
+.. _sensor-cutoff:
+
 :at:`cutoff`: :at-val:`real, "0"`
    When this value is positive, it limits the absolute value of the sensor output. It is also used to normalize the
-   sensor output in the sensor data plots in :ref:`simulate.cc <saSimulate>`.
+   sensor data plots in :ref:`simulate.cc <saSimulate>`. Note that :at:`cutoff` has a different meaning for
+   :ref:`collision sensors<collision-sensors>`.
+
+.. _sensor-nsample:
+
+:at:`nsample`: :at-val:`int, "0"`
+   If :at-val:`nsample` is greater than 0, creates a time-indexed ring buffer with :at:`nsample` slots of sensor data.
+   During state advancement, the current sensor data is appended to the buffer with timestamp ``time``, and the oldest
+   sample is removed. Values in the history buffer can be read via :ref:`mj_readSensor`. A positive :at-val:`nsample`
+   is required for both :ref:`delay<sensor-delay>` and :ref:`interval<sensor-interval>` features.
+
+   See :ref:`Delays<CDelay>` for details.
+
+.. _sensor-interp:
+
+:at:`interp`: :at-val:`[zoh, linear, cubic], "zoh"`
+   The interpolation method used when reading from the history buffer. Corresponds to the ``interp`` argument in
+   :ref:`mj_readSensor`.
+
+   - ``zoh``: Zero-order hold (piecewise constant).
+   - ``linear``: Piecewise linear interpolation.
+   - ``cubic``: Cubic spline interpolation (Catmull-Rom).
+
+   The :at:`interp` value is for advanced use-cases, see :ref:`Delays<CDelay>` for details.
+
+.. _sensor-delay:
+
+:at:`delay`: :at-val:`real, "0"`
+   If greater than 0, sensor values in ``mjData.sensordata`` are read from the history buffer at ``time - delay`` rather
+   than computed directly. Requires positive :ref:`nsample<sensor-nsample>`, cannot be negative.
+
+   In the most common case, ``delay = nsample * timestep``, see :ref:`Delays<CDelay>` for details.
+
+.. _sensor-interval:
+
+:at:`interval`: :at-val:`real, "0 0"`
+   This attribute controls how often sensor values are recomputed. It is useful for modeling sensors that have a larger
+   sampling period than the simulation timestep. Requires a history buffer (:ref:`nsample <sensor-nsample>` > 0).
+
+   This attribute is defined by two real-valued numbers, both in units of time, called :at:`interval` =
+   ":at-val:`period` :at-val:`phase`". It is possible to only specify the :at-val:`period`, in which case the
+   :at-val:`phase` is assumed to be 0.
+
+   The :at-val:`period` specifies the interval period between recomputations. The default value of 0 has the special
+   meaning "every simulation timestep". Note that the period is not required to be an integer multiple of the timestep.
+   For example, if the simulation timestep is 1.0, and :at-val:`period` is 2.5, the sensor will be computed at times
+   0.0, 3.0, 5.0, 8.0, 10.0, 13.0, ... with the actual interval alternating between 2 and 3 timesteps. :at-val:`period`
+   cannot be negative. Note that only ``period > timestep`` values make sense; values smaller than or equal to the
+   timestep will not lead to an error but merely cause the sensor to be recomputed at every timestep.
+
+   The :at-val:`phase` only takes effect during history buffer initialization in :ref:`mj_resetData`. It specifies the
+   last time that the sensor was computed "before the simulation started" in continuous time (i.e., disregarding the
+   quantization of timesteps). It is useful for precisely controlling the *relative phase* of sensor computation and
+   simulation time, when interval is used. The default value of 0 has the special meaning ":at-val:`-period`", i.e.
+   specifying that the sensor should be computed at the first timestep of the simulation. Continuing our example from
+   earlier, if the timestep is 1.0 and interval is ":at-val:`2.5 -1.5`", the sensor will be computed at times 1.0, 4.0,
+   6.0, 9.0, 11.0, 14.0, etc. :at-val:`phase` must be in the range :math:`(-\text{period}, 0]`.
+
 :at:`user`: :at-val:`real(nuser_sensor), "0 0 ..."`
    See :ref:`User parameters <CUser>`.
+
+.. _CDelay:
+
+Delays
+~~~~~~
+
+Both actuators and sensors support time delays via a ring buffer that stores timestamped samples. When the integer
+attribute :at:`nsample` (:ref:`actuators<actuator-general-nsample>`, :ref:`sensors<sensor-nsample>`) is positive, a
+buffer with :at:`nsample` slots is included in the :ref:`physics state<siPhysicsState>` component ``mjData.history``
+and the samples and current timestamps are written into the buffer upon state advancement.
+
+If additionally the real-valued :at:`delay` attribute (:ref:`actuators<actuator-general-delay>`,
+:ref:`sensors<sensor-delay>`) is positive, then during the forward dynamics the control or sensor values are read from
+the history buffer (instead of being read from ``ctrl`` or recomputed, respectively). Positive :at:`delay` requires
+positive :at:`nsample`.
+
+Note that since reading happens before writing, the minimum positive delay is effectively one timestep, despite
+:at:`delay` being real-valued.
+
+Delayed reading in the engine is triggered by positive :at:`delay`, and performed by the API functions
+:ref:`mj_readCtrl` and :ref:`mj_readSensor`, which read from the buffer at ``time - delay``, effectively implementing
+the requested delay. These functions take ``time`` as an argument and can be used whenever :at:`nsample` is positive,
+allowing the user to inspect the contents of the history buffer at any time, including in a "history-only" mode
+(:at:`nsample` > 0, :at:`delay` = 0), where past values are accessible via the API but the simulation is unaffected.
+
+**Sensor Modes**
+
+Sensors support both :ref:`delay<sensor-delay>` and :ref:`interval/period<sensor-interval>` attributes.
+The combination determines behavior:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 10 10 80
+
+   * - delay
+     - period
+     - Write / Read behavior
+   * - = 0
+     - = 0
+     - History-only: computed every step, written to ``sensordata``, pushed into history buffer
+   * - > 0
+     - = 0
+     - Delayed: computed every step, ``sensordata`` contains delayed reading (read from buffer)
+   * - = 0
+     - > 0
+     - Periodic: computed on period, ``sensordata`` contains last computed value (no delay)
+   * - > 0
+     - > 0
+     - Periodic + Delayed: computed on period, ``sensordata`` contains delayed reading (read from buffer)
+
+**Initialization**
+
+History buffers are initialized by :ref:`mj_resetData` as follows:
+
+- **Values**: Always initialized to zero. For custom initialization after reset, call :ref:`mj_initCtrlHistory`
+  and :ref:`mj_initSensorHistory`.
+
+- **Actuator timestamps**: ``[..., -2*dt, -dt]``.
+
+- **Sensor timestamps** without :ref:`interval<sensor-interval>`: ``[..., -2*dt, -dt]``.
+
+- **Sensor timestamps** with :ref:`interval<sensor-interval>`: Samples are spaced at ``period`` intervals rather than
+  ``dt``. The continuous-time timestamps ``[..., phase-2*period, phase-period, phase]`` are rounded up to the nearest
+  multiple of ``dt``, since that is when samples could have been computed. If ``phase = 0`` (the default), it is
+  interpreted as ``-period``, meaning the first sample will be computed at ``t = 0``.
+
+**Causality and interpolation**
+
+The most common positive delay value is ``delay = timestep * nsample``, which implements a simple
+history buffer, with no causality issues.
+
+.. warning::
+
+   If ``delay > timestep * nsample``, then data will be read before the earliest buffer bound, resulting in non-causal
+   extrapolation: using a value from before it was actually recorded. This scenario will not lead to a runtime error,
+   so it is up to the user to avoid it.
+
+Setting ``delay < timestep * nsample`` is not problematic and can be useful for system identification and stochastic
+delays. In these use cases, one should choose a maximum possible ``delay_max`` and set ``nsample = ceil(delay_max /
+timestep)``. Then at run-time or sysID-time, the :ref:`mjModel` fields ``actuator_delay`` or ``sensor_delay`` can be
+safely modified, so long as ``delay_max`` is not exceeded.
+
+.. image:: images/modeling/delay_buffer_light.svg
+   :width: 50%
+   :align: right
+   :class: only-light
+
+.. image:: images/modeling/delay_buffer_dark.svg
+   :width: 50%
+   :align: right
+   :class: only-dark
+
+These two use cases are the reason for including the :at:`interp` attribute (:ref:`actuators<actuator-general-interp>`,
+:ref:`sensors<sensor-interp>`). While real-world exogenous delays are generally a zero-order-hold phenomenon, this
+implies discontinuity: a small change in the delay has no effect, until the timestep threshold is crossed. For example
+with ``dt = 0.1`` and ``nsample = 2``, there is no functional difference between ``delay = 0.2`` and ``delay = 0.101``
+(both read from the oldest sample), but stepping from ``delay = 0.101`` to ``delay = 0.1`` crosses a threshold and
+changes behavior. By allowing higher order interpolation, the effect of delays becomes continuous (``interp = linear``)
+and differentiable (``interp = cubic``).
+
+Note that interpolation does not makes sense for some types of sensors, for example sensors that report integer values
+(e.g. :ref:`insidesite<sensor-insidesite>`).
 
 .. _CCamera:
 
@@ -1103,9 +1293,14 @@ Besides the default, user-controllable, free camera, "fixed" cameras can be atta
 
 Extrinsics
    By default, camera frames are attached to the containing body. The optional :ref:`mode<body-camera-mode>` and
-   :ref:`target<body-camera-target>` attributes can be used to specify camera that track (move with) or target (look at)
-   a body or subtree. Cameras look towards the negative Z axis of the camera frame, while positive X and Y correspond to
+   :ref:`target<body-camera-target>` attributes can be used to specify cameras that track (move with) or target (look
+   at) a body or subtree. Cameras look towards the negative Z axis of the camera frame, while positive X and Y correspond to
    *right* and *up* in the image plane, respectively.
+
+Projection
+   Cameras use :ref:`perspective<body-camera-projection>` projection by default. Setting
+   :ref:`projection<body-camera-projection>` to ``orthographic`` switches to an orthographic projection, where the
+   :ref:`fovy<body-camera-fovy>` attribute is interpreted as the vertical extent in length units rather than degrees.
 
 Intrinsics
    Camera intrinsics are specified using :ref:`ipd<body-camera-ipd>` (inter-pupilary distance, required for
@@ -1124,15 +1319,14 @@ Intrinsics
 Composite objects
 ~~~~~~~~~~~~~~~~~
 
-Composite objects are not new model elements. Instead, they are collections of existing element originally designed to
-simulate particle systems, ropes, cloth, and soft bodies. Over time, most of these types have been replaced by
-:ref:`replicate<replicate>` (for repeated objects) and :ref:`flexcomp<body-flexcomp>` (for soft objects). Therefore, the
-only supported composite type is now ``cable``, which produces an inextensible chain of bodies connected with ball
-joints.
+Composite objects are collections of existing elements originally designed to simulate particle systems, ropes, cloth,
+and soft bodies. Over time, most of these types have been replaced by :ref:`replicate<replicate>` (for repeated objects)
+and :ref:`flexcomp<body-flexcomp>` (for soft objects). Therefore, the only supported composite type is now ``cable``,
+which produces an inextensible chain of bodies connected with ball joints.
 
 Composite objects are made up of regular MuJoCo bodies, which we call "element bodies" in this context. The collection
 of element bodies is generated by the model compiler automatically. The user configures the automatic generator on a
-high level, using the new XML element :ref:`composite <body-composite>` and its attributes and sub-elements, as
+high level, using the XML element :ref:`composite <body-composite>` and its attributes and sub-elements, as
 described in the XML reference chapter. If the compiled model is then saved, :el:`composite` is no longer present and is
 replaced with the collection of regular model elements that were automatically generated. So think of it as a macro that
 gets expanded by the model compiler. The element bodies are created as children of the body within which :el:`composite`
@@ -1191,32 +1385,11 @@ stiffnesses can be set independently. Moreover, it is possible to specify if the
 curve, such as in the case of coil springs. The cable requires using a first-party :ref:`engine plugin<exPlugin>`, which
 may be integrated directly into the engine in the future.
 
-**Particle**.
+**Deprecated types**.
 
-The particle type is deprecated. It is recommended to use the more generic :ref:`replicate<replicate>` instead, for
-example `this model <https://github.com/google-deepmind/mujoco/blob/main/model/replicate/particle.xml>`__.
-
-**Grid**.
-
-The grid composite type has been removed. It is recommended to use 2D flex :ref:`deformable objects <CDeformable>` for
-simulating thin elastic structures.
-
-**Rope and loop**.
-
-The rope and loop are deprecated. It is recommended to use the cable for simulating inextensible elastic rods that are
-bent and twisted and 1D flex :ref:`deformable objects <CDeformable>` for extensible strings in a tensile loading
-scenario (e.g. a stretched rubber band).
-
-**Cloth**.
-
-The cloth is deprecated. It is recommended to use 2D flex :ref:`deformable objects <CDeformable>` for simulating thin
-elastic structures.
-
-**Box, cylinder and ellipsoid**.
-
-
-The box type, as well as the cylinder and ellipsoid types, are now deprecated in favor of 3D flex :ref:`deformable
-objects <CDeformable>`. element.
+All composite types other than ``cable`` have been deprecated or removed. Use :ref:`replicate<replicate>` for repeated
+objects (e.g., particle systems) and :ref:`flex<CDeformable>` deformable objects for soft bodies (ropes, cloth,
+volumetric solids).
 
 .. _CDeformable:
 
@@ -1265,7 +1438,7 @@ that applies to all edges of a given flex, which permits large time steps, or a 
 where each element is in a constant stress state, which is equivalent to piecewise linear finite elements and achieves
 improved realism and accuracy. The edge-based model could be seen as a "lumped" stiffness model, where the correct
 coupling of deformation modes (e.g. shear and volumetric) is averaged in a single quantity. The continuum model enables
-instead to specify shear and volumetic stiffnesses separately using the `Poisson's ratio
+instead to specify shear and volumetric stiffnesses separately using the `Poisson's ratio
 <https://en.wikipedia.org/wiki/Poisson%27s_ratio>`__ of the material. For more details, see the `Saint Venant-Kirchhoff
 <https://en.wikipedia.org/wiki/Hyperelastic_material#Saint_Venant%E2%80%93Kirchhoff_model>`__ hyperelastic model.
 
@@ -1323,7 +1496,7 @@ are allowed even when that does not make sense semantically in the context of a 
 the kinematic tree to have multiple roots (i.e., multiple :el:`worldbody` elements) which are merged automatically by
 the parser. Otherwise including robots into scenes would be impossible.
 
-The flexibility of repeated MCJF sections comes at a price: global settings that apply to the entire model, such as
+The flexibility of repeated MJCF sections comes at a price: global settings that apply to the entire model, such as
 the :at:`angle` attribute of :ref:`compiler <compiler>` for example, can be defined multiple times.
 MuJoCo allows this, and uses the last definition encountered in the composite model, after all include elements have
 been processed. So if model A is defined in degrees and model B is defined in radians, and A is included in B after
@@ -1419,9 +1592,9 @@ violate the simulated physics. But at the same time we want the resulting simula
 this?
 
 The first step is to define a mocap body in the MJCF model, and implement code that reads the data stream at runtime and
-sets mjModel.mocap_pos and mjModel.mocap_quat to the position and orientation received from the motion capture system.
-The :ref:`simulate.cc <saSimulate>` code sample uses the mouse as a motion capture device, allowing the user to move
-mocap bodies around:
+sets :ref:`mjData.mocap_pos <siMocap>` and :ref:`mjData.mocap_quat <siMocap>` to the position and orientation received
+from the motion capture system. The :ref:`simulate.cc <saSimulate>` code sample uses the mouse as a motion capture
+device, allowing the user to move mocap bodies around:
 
 |particle|
 
@@ -1442,7 +1615,7 @@ perfectly (and much better than a spring-damper would) because the constraints a
 large forces without destabilizing the simulation. But if the hand is forced to make contact with the table for example
 (right plot) it cannot simultaneously respect the contact constraint and track the mocap body. This is because the
 mocap body is free to go through the table. So which constraint wins? That depends on the softness of the weld
-constraint realtive to the contact constraint. The corresponding :at:`solref` and :at:`solimp` parameters need to be
+constraint relative to the contact constraint. The corresponding :at:`solref` and :at:`solimp` parameters need to be
 adjusted so as to achieve the desired trade-off. See the Modular Prosthetic Limb (MPL) hand model available on the
 MuJoCo Forum for an example; the plots below are generated with that model.
 
@@ -1491,14 +1664,6 @@ memory efficient, followed by the Newton solver, while the PGS solver is the mos
 models, we usually aim for 50% utilization in the worst-case scenario encountered while exploring the model. If you only
 intend to use the CG solver, you can get away with significantly smaller arena allocation.
 
-.. attention::
-
-   Memory allocation behaviour changed in MuJoCo 2.3.0. Before this version, the :at:`njmax`, :at:`nconmax` and
-   :at:`nstack` attributes of the :ref:`size <size>` MJCF element had the semantics of maximum memory allocated for
-   contacts, constraints and stack, respectively. If you are using an earlier version of MuJoCo, please switch to an
-   `earlier <https://mujoco.readthedocs.io/en/2.2.2/modeling.html#model-sizes>`_ documentation version to read about the
-   previous behaviour.
-
 .. _Tips:
 
 Tips and tricks
@@ -1523,7 +1688,7 @@ dedicated section :ref:`therein<MjxPerformance>`.
 1. :ref:`Timestep<option-timestep>`: Try to increase the simulation timestep. As explained at the end of the
    :ref:`Numerical Integration<geIntegration>` section, the timestep is the single most important parameter in any
    model. The default value is chosen for stability rather than efficiency, and can often be increased. At some point,
-   increasing it further will cause diveregence, so the optimal timestep is the largest timestep at which divergence
+   increasing it further will cause divergence, so the optimal timestep is the largest timestep at which divergence
    never happens or is very rare. The actual value is model-dependent.
 2. :ref:`Integrator<option-integrator>`: Choose your integrator according to the recommendations at the end of the
    :ref:`Numerical Integration<geIntegration>` section. The default recommended choice is the ``implicitfast``
@@ -1546,7 +1711,7 @@ dedicated section :ref:`therein<MjxPerformance>`.
 
    - Reduce the number of checked collisions using the
      :ref:`contype<body-geom-contype>` / :ref:`conaffinity<body-geom-conaffinity>` mechanism described in the
-     :ref:`Collison detection<Collision>` section.
+     :ref:`Collision detection<Collision>` section.
    - Modify collision geometries, replacing expensive collision tests (e.g. mesh-mesh) with cheaper primitive-primitive
      collisions. As a rule of thumb, collisions which have custom pair functions in the collision table at the top of
      `engine_collision_driver.c <https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_collision_driver.c>`__
@@ -1557,9 +1722,9 @@ dedicated section :ref:`therein<MjxPerformance>`.
 6. :ref:`Friction cones<option-cone>`: Elliptic cones are more accurate and better at preventing slip with high
    :ref:`impratio<option-impratio>`, but are more expensive. If accurate friction is not important, try switching
    to pyramidal cones.
-7. Compile MuJoCo with 32-bit floating point precision (rather than the default 64). For large models running in
-   multi-threaded mode, where memory access is more expensive than computation, this can lead to (up to) 2x performance
-   improvement. See :ref:`mjtNum` for more information.
+7. For custom builds, MuJoCo can be compiled with 32-bit floating point precision (rather than the default 64-bit). For
+   large models where memory bandwidth is the bottleneck, this can improve performance. See :ref:`mjtNum` for more
+   information. Note that float32 rarely yields measurable speedups in typical models.
 
 .. _CSlippage:
 
@@ -1577,7 +1742,7 @@ better visualize and understand the contact configuration and resulting forces.
 **Slip-preventing contact forces are outside the friction cone**
   This implies that the physics cannot prevent slip, even in principle. This occurs when:
 
-  a. *The normal force is too small.* Ensure that the maximum force that can be applied by the gripper mutiplied by
+  a. *The normal force is too small.* Ensure that the maximum force that can be applied by the gripper multiplied by
      the sliding friction coefficient is significantly greater than the weight of the object.
   b. *The sliding friction coefficient is too low.* Increase the sliding :ref:`friction<body-geom-friction>`
      coefficient.
@@ -1585,7 +1750,7 @@ better visualize and understand the contact configuration and resulting forces.
      4 or 6 and choose appropriate friction coefficients.
      **condim 4** enables torsional friction, preventing rotation around the normal.
      **condim 6** also enables rolling friction, preventing rotation around the tangential directions.
-     See the :ref:`Contact<coContact>` section for details and the specifc semantics of these coefficients.
+     See the :ref:`Contact<coContact>` section for details and the specific semantics of these coefficients.
 
 **The geometry does not support the required forces or torques**
   This is a common real-world problem, solved by improved design of grippers and handles.
@@ -1601,7 +1766,7 @@ better visualize and understand the contact configuration and resulting forces.
   High-frequency, low-amplitude vibrations are also a real-world problem in many industrial settings, but unlike in
   simulation, in the real world they are audible. Such vibration is often caused by controllers with very
   high gains and sometimes by stick-slip feedback from contacts or joints, resonating with the eigen-modes of the
-  mechanism. The easist way to diagnose such vibration is to visualize contact forces in
+  mechanism. The easiest way to diagnose such vibration is to visualize contact forces in
   :ref:`simulate<saSimulate>`. The solution is usually to reduce the :ref:`timestep<option-timestep>` and/or add
   some :ref:`armature<body-joint-armature>` to the relevant joints. Another reason for vibration is feedback from
   explicit damping. Use the implicit or implicitfast integrators, as documented in the
@@ -1614,8 +1779,8 @@ better visualize and understand the contact configuration and resulting forces.
 
   a. Increase the :ref:`impratio<option-impratio>` parameter. This will reduce (but not entirely prevent) slow
      slippage. Note that high impratio values work well only with :ref:`elliptic cones<option-cone>`.
-  b. Enable the noslip solver by increasing :ref:`noslip_iterations<option-noslip_iterations>` to a positive integer.
-     A small number (1, 2 or 3) is usually sufficient. The noslip post-processing solver will entirely prevent slip,
+  b. Enable the NoSlip solver by increasing :ref:`noslip_iterations<option-noslip_iterations>` to a positive integer.
+     A small number (1, 2 or 3) is usually sufficient. The NoSlip post-processing solver will entirely prevent slip,
      at the cost of making inverse dynamics ill-defined and additional computational cost.
 
 .. _CBacklash:

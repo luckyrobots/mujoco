@@ -29,6 +29,8 @@ set(MUJOCO_USER_SRCS
     user_objects.h
     user_resource.cc
     user_resource.h
+    user_threadpool.cc
+    user_threadpool.h
     user_util.cc
     user_util.h
     user_vfs.cc
@@ -36,4 +38,3 @@ set(MUJOCO_USER_SRCS
 )
 
 target_sources(mujoco PRIVATE ${MUJOCO_USER_SRCS})
-target_compile_definitions(mujoco PRIVATE MUJOCO_TINYOBJLOADER_IMPL)

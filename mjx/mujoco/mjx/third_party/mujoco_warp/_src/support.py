@@ -13,105 +13,120 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import warp as wp
 
-from mujoco.mjx.third_party.mujoco_warp._src.collision_primitive import Geom
 from mujoco.mjx.third_party.mujoco_warp._src.math import motion_cross
+from mujoco.mjx.third_party.mujoco_warp._src.types import MJ_MINVAL
 from mujoco.mjx.third_party.mujoco_warp._src.types import ConeType
 from mujoco.mjx.third_party.mujoco_warp._src.types import Data
+from mujoco.mjx.third_party.mujoco_warp._src.types import DynType
 from mujoco.mjx.third_party.mujoco_warp._src.types import JointType
 from mujoco.mjx.third_party.mujoco_warp._src.types import Model
-from mujoco.mjx.third_party.mujoco_warp._src.types import TileSet
+from mujoco.mjx.third_party.mujoco_warp._src.types import State
 from mujoco.mjx.third_party.mujoco_warp._src.types import vec5
-from mujoco.mjx.third_party.mujoco_warp._src.types import vec6
+from mujoco.mjx.third_party.mujoco_warp._src.types import vec10f
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import cache_kernel
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import event_scope
-from mujoco.mjx.third_party.mujoco_warp._src.warp_util import kernel as nested_kernel
 
 wp.set_module_options({"enable_backward": False})
 
 
-@wp.kernel
-def mul_m_sparse_diag(
+# TODO(team): kernel analyzer array slice?
+@wp.func
+def next_act(
   # Model:
-  dof_Madr: wp.array(dtype=int),
-  # Data in:
-  qM_in: wp.array3d(dtype=float),
+  opt_timestep: float,  # kernel_analyzer: ignore
+  actuator_dyntype: int,  # kernel_analyzer: ignore
+  actuator_dynprm: vec10f,  # kernel_analyzer: ignore
+  actuator_actrange: wp.vec2,  # kernel_analyzer: ignore
+  # Data In:
+  act_in: float,  # kernel_analyzer: ignore
+  act_dot_in: float,  # kernel_analyzer: ignore
   # In:
-  vec: wp.array2d(dtype=float),
-  skip: wp.array(dtype=bool),
-  # Out:
-  res: wp.array2d(dtype=float),
-):
-  """Diagonal update for sparse matmul."""
-  worldid, dofid = wp.tid()
+  act_dot_scale: float,
+  clamp: bool,
+) -> float:
+  # advance actuation
+  if actuator_dyntype == DynType.FILTEREXACT:
+    tau = wp.max(MJ_MINVAL, actuator_dynprm[0])
+    act = act_in + act_dot_scale * act_dot_in * tau * (1.0 - wp.exp(-opt_timestep / tau))
+  elif actuator_dyntype == DynType.USER:
+    return act_in
+  else:
+    act = act_in + act_dot_scale * act_dot_in * opt_timestep
 
-  if skip[worldid]:
-    return
+  # clamp to actrange
+  if clamp:
+    act = wp.clamp(act, actuator_actrange[0], actuator_actrange[1])
 
-  res[worldid, dofid] = qM_in[worldid, 0, dof_Madr[dofid]] * vec[worldid, dofid]
-
-
-@wp.kernel
-def mul_m_sparse_ij(
-  # Model:
-  qM_mulm_i: wp.array(dtype=int),
-  qM_mulm_j: wp.array(dtype=int),
-  qM_madr_ij: wp.array(dtype=int),
-  # Data in:
-  qM_in: wp.array3d(dtype=float),
-  # In:
-  vec: wp.array2d(dtype=float),
-  skip: wp.array(dtype=bool),
-  # Out:
-  res: wp.array2d(dtype=float),
-):
-  """Off-diagonal update for sparse matmul."""
-  worldid, elementid = wp.tid()
-
-  if skip[worldid]:
-    return
-
-  i = qM_mulm_i[elementid]
-  j = qM_mulm_j[elementid]
-  madr_ij = qM_madr_ij[elementid]
-
-  qM_ij = qM_in[worldid, 0, madr_ij]
-
-  wp.atomic_add(res[worldid], i, qM_ij * vec[worldid, j])
-  wp.atomic_add(res[worldid], j, qM_ij * vec[worldid, i])
+  return act
 
 
 @cache_kernel
-def mul_m_dense(tile: TileSet):
-  """Returns a matmul kernel for some tile size"""
-
-  @nested_kernel(module="unique", enable_backward=False)
-  def kernel(
-    # Data In:
+def mul_m_sparse(check_skip: bool):
+  @wp.kernel(module="unique")
+  def _mul_m_sparse(
+    # Model:
+    qM_mulm_rowadr: wp.array(dtype=int),
+    qM_mulm_col: wp.array(dtype=int),
+    qM_mulm_madr: wp.array(dtype=int),
+    # Data in:
     qM_in: wp.array3d(dtype=float),
     # In:
-    adr: wp.array(dtype=int),
-    vec: wp.array3d(dtype=float),
+    vec: wp.array2d(dtype=float),
     skip: wp.array(dtype=bool),
     # Out:
-    res: wp.array3d(dtype=float),
+    res: wp.array2d(dtype=float),
   ):
-    worldid, nodeid = wp.tid()
-    TILE_SIZE = wp.static(tile.size)
+    """Sparse matmul: one thread per DOF, gather-based (no atomics)."""
+    worldid, dofid = wp.tid()
 
-    if skip[worldid]:
-      return
+    if wp.static(check_skip):
+      if skip[worldid]:
+        return
 
-    dofid = adr[nodeid]
-    qM_tile = wp.tile_load(qM_in[worldid], shape=(TILE_SIZE, TILE_SIZE), offset=(dofid, dofid))
-    vec_tile = wp.tile_load(vec[worldid], shape=(TILE_SIZE, 1), offset=(dofid, 0))
-    res_tile = wp.tile_matmul(qM_tile, vec_tile)
-    wp.tile_store(res[worldid], res_tile, offset=(dofid, 0))
+    # Gather all contributions (diagonal + off-diagonal)
+    acc = float(0.0)
+    start = qM_mulm_rowadr[dofid]
+    end = qM_mulm_rowadr[dofid + 1]
+    for k in range(start, end):
+      col = qM_mulm_col[k]
+      madr = qM_mulm_madr[k]
+      acc += qM_in[worldid, 0, madr] * vec[worldid, col]
 
-  return kernel
+    res[worldid, dofid] = acc
+
+  return _mul_m_sparse
+
+
+@cache_kernel
+def mul_m_dense(nv: int, check_skip: bool):
+  """Simple SIMT dense matmul: one thread per output element."""
+
+  @wp.kernel(module="unique")
+  def _mul_m_dense(
+    # Data in:
+    qM_in: wp.array3d(dtype=float),
+    # In:
+    vec: wp.array2d(dtype=float),
+    skip: wp.array(dtype=bool),
+    # Out:
+    res: wp.array2d(dtype=float),
+  ):
+    worldid, i = wp.tid()
+
+    if wp.static(check_skip):
+      if skip[worldid]:
+        return
+
+    acc = float(0.0)
+    for j in range(wp.static(nv)):
+      acc += qM_in[worldid, i, j] * vec[worldid, j]
+    res[worldid, i] = acc
+
+  return _mul_m_dense
 
 
 @event_scope
@@ -120,53 +135,40 @@ def mul_m(
   d: Data,
   res: wp.array2d(dtype=float),
   vec: wp.array2d(dtype=float),
-  skip: wp.array(dtype=bool),
-  M: wp.array3d(dtype=float) = None,
+  skip: Optional[wp.array] = None,
+  M: Optional[wp.array] = None,
 ):
-  """Multiply vectors by inertia matrix.
+  """Multiply vectors by inertia matrix; optionally skip per world.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
-    res (wp.array2d(dtype=float)): Result: qM @ vec.
-    vec (wp.array2d(dtype=float)): Input vector to multiply by qM.
-    skip (wp.array(dtype=flooat)): Skip output.
-    M (wp.array3d(dtype=float), optional): Input matrix: M @ vec.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    res: Result: qM @ vec.
+    vec: Input vector to multiply by qM.
+    skip: Per-world bitmask to skip computing output.
+    M: Input matrix: M @ vec.
   """
+  check_skip = skip is not None
+  skip = skip or wp.empty(0, dtype=bool)
 
   if M is None:
     M = d.qM
 
-  if m.opt.is_sparse:
+  if m.is_sparse:
     wp.launch(
-      mul_m_sparse_diag,
+      mul_m_sparse(check_skip),
       dim=(d.nworld, m.nv),
-      inputs=[m.dof_Madr, M, vec, skip],
-      outputs=[res],
-    )
-
-    wp.launch(
-      mul_m_sparse_ij,
-      dim=(d.nworld, m.qM_madr_ij.size),
-      inputs=[m.qM_mulm_i, m.qM_mulm_j, m.qM_madr_ij, M, vec, skip],
+      inputs=[m.qM_mulm_rowadr, m.qM_mulm_col, m.qM_mulm_madr, M, vec, skip],
       outputs=[res],
     )
 
   else:
-    for tile in m.qM_tiles:
-      wp.launch_tiled(
-        mul_m_dense(tile),
-        dim=(d.nworld, tile.adr.size),
-        inputs=[
-          M,
-          tile.adr,
-          # note reshape: tile_matmul expects 2d input
-          vec.reshape(vec.shape + (1,)),
-          skip,
-        ],
-        outputs=[res.reshape(res.shape + (1,))],
-        block_dim=m.block_dim.mul_m_dense,
-      )
+    wp.launch(
+      mul_m_dense(m.nv, check_skip),
+      dim=(d.nworld, m.nv),
+      inputs=[M, vec, skip],
+      outputs=[res],
+    )
 
 
 @wp.kernel
@@ -225,41 +227,14 @@ def apply_ft(m: Model, d: Data, ft: wp.array2d(dtype=wp.spatial_vector), qfrc: w
 
 @event_scope
 def xfrc_accumulate(m: Model, d: Data, qfrc: wp.array2d(dtype=float)):
-  """
-  Map applied forces at each body via Jacobians to dof space and accumulate.
+  """Map applied forces at each body via Jacobians to dof space and accumulate.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
-    qfrc (wp.array2d(dtype=float)): Total applied force mapped to dof space.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    qfrc: Total applied force mapped to dof space.
   """
   apply_ft(m, d, d.xfrc_applied, qfrc, True)
-
-
-@wp.func
-def all_same(v0: wp.vec3, v1: wp.vec3) -> wp.bool:
-  dx = abs(v0[0] - v1[0])
-  dy = abs(v0[1] - v1[1])
-  dz = abs(v0[2] - v1[2])
-
-  return (
-    (dx <= 1.0e-9 or dx <= max(abs(v0[0]), abs(v1[0])) * 1.0e-9)
-    and (dy <= 1.0e-9 or dy <= max(abs(v0[1]), abs(v1[1])) * 1.0e-9)
-    and (dz <= 1.0e-9 or dz <= max(abs(v0[2]), abs(v1[2])) * 1.0e-9)
-  )
-
-
-@wp.func
-def any_different(v0: wp.vec3, v1: wp.vec3) -> wp.bool:
-  dx = abs(v0[0] - v1[0])
-  dy = abs(v0[1] - v1[1])
-  dz = abs(v0[2] - v1[2])
-
-  return (
-    (dx > 1.0e-9 and dx > max(abs(v0[0]), abs(v1[0])) * 1.0e-9)
-    or (dy > 1.0e-9 and dy > max(abs(v0[1]), abs(v1[1])) * 1.0e-9)
-    or (dz > 1.0e-9 and dz > max(abs(v0[2]), abs(v1[2])) * 1.0e-9)
-  )
 
 
 @wp.func
@@ -295,13 +270,13 @@ def contact_force_fn(
   # Model:
   opt_cone: int,
   # Data in:
-  njmax_in: int,
-  nacon_in: wp.array(dtype=int),
   contact_frame_in: wp.array(dtype=wp.mat33),
   contact_friction_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array(dtype=int),
   contact_efc_address_in: wp.array2d(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
+  njmax_in: int,
+  nacon_in: wp.array(dtype=int),
   # In:
   worldid: int,
   contact_id: int,
@@ -340,14 +315,14 @@ def contact_force_kernel(
   # Model:
   opt_cone: int,
   # Data in:
-  njmax_in: int,
-  nacon_in: wp.array(dtype=int),
   contact_frame_in: wp.array(dtype=wp.mat33),
   contact_friction_in: wp.array(dtype=vec5),
   contact_dim_in: wp.array(dtype=int),
   contact_efc_address_in: wp.array2d(dtype=int),
   contact_worldid_in: wp.array(dtype=int),
   efc_force_in: wp.array2d(dtype=float),
+  njmax_in: int,
+  nacon_in: wp.array(dtype=int),
   # In:
   contact_ids: wp.array(dtype=int),
   to_world_frame: bool,
@@ -365,13 +340,13 @@ def contact_force_kernel(
 
   out[tid] = contact_force_fn(
     opt_cone,
-    njmax_in,
-    nacon_in,
     contact_frame_in,
     contact_friction_in,
     contact_dim_in,
     contact_efc_address_in,
     efc_force_in,
+    njmax_in,
+    nacon_in,
     worldid,
     contactid,
     to_world_frame,
@@ -379,35 +354,30 @@ def contact_force_kernel(
 
 
 def contact_force(
-  m: Model,
-  d: Data,
-  contact_ids: wp.array(dtype=int),
-  to_world_frame: bool,
-  force: wp.array(dtype=wp.spatial_vector),
+  m: Model, d: Data, contact_ids: wp.array(dtype=int), to_world_frame: bool, force: wp.array(dtype=wp.spatial_vector)
 ):
-  """
-  Compute forces for contacts in Data.
+  """Compute forces for contacts in Data.
 
   Args:
-    m (Model): The model containing kinematic and dynamic information (device).
-    d (Data): The data object containing the current state and output arrays (device).
-    contact_ids (wp.array(dtype=int)): IDs for each contact.
-    to_world_frame (bool): If True, map force from contact to world frame.
-    force (wp.array(dtype=wp.spatial_vector)): Contact forces.
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output arrays (device).
+    contact_ids: IDs for each contact.
+    to_world_frame: If True, map force from contact to world frame.
+    force: Contact forces.
   """
   wp.launch(
     contact_force_kernel,
-    dim=(contact_ids.size,),
+    dim=contact_ids.size,
     inputs=[
       m.opt.cone,
-      d.njmax,
-      d.nacon,
       d.contact.frame,
       d.contact.friction,
       d.contact.dim,
       d.contact.efc_address,
       d.contact.worldid,
       d.efc.force,
+      d.njmax,
+      d.nacon,
       contact_ids,
       to_world_frame,
     ],
@@ -428,7 +398,7 @@ def transform_force(frc: wp.spatial_vector, offset: wp.vec3) -> wp.spatial_vecto
 
 
 @wp.func
-def jac(
+def jac_dof(
   # Model:
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
@@ -466,8 +436,77 @@ def jac(
   return jacp, jacr
 
 
+@cache_kernel
+def _make_jac_kernel(has_jacp: bool, has_jacr: bool):
+  @wp.kernel(module="unique", enable_backward=False)
+  def _jac(
+    # Model:
+    body_parentid: wp.array(dtype=int),
+    body_rootid: wp.array(dtype=int),
+    dof_bodyid: wp.array(dtype=int),
+    # Data in:
+    subtree_com_in: wp.array2d(dtype=wp.vec3),
+    cdof_in: wp.array2d(dtype=wp.spatial_vector),
+    # In:
+    point_in: wp.array(dtype=wp.vec3),
+    bodyid_in: wp.array(dtype=int),
+    # Out:
+    jacp_out: wp.array3d(dtype=float),
+    jacr_out: wp.array3d(dtype=float),
+  ):
+    worldid, dofid = wp.tid()
+
+    jacp_val, jacr_val = jac_dof(
+      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, point_in[worldid], bodyid_in[worldid], dofid, worldid
+    )
+
+    if wp.static(has_jacp):
+      jacp_out[worldid, 0, dofid] = jacp_val[0]
+      jacp_out[worldid, 1, dofid] = jacp_val[1]
+      jacp_out[worldid, 2, dofid] = jacp_val[2]
+
+    if wp.static(has_jacr):
+      jacr_out[worldid, 0, dofid] = jacr_val[0]
+      jacr_out[worldid, 1, dofid] = jacr_val[1]
+      jacr_out[worldid, 2, dofid] = jacr_val[2]
+
+  return _jac
+
+
+@event_scope
+def jac(
+  m: Model,
+  d: Data,
+  jacp: wp.array | None,  # wp.array3d(dtype=float)
+  jacr: wp.array | None,  # wp.array3d(dtype=float)
+  point: wp.array(dtype=wp.vec3),
+  body: wp.array(dtype=int),
+):
+  """Compute translational and rotational Jacobian for point on body.
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state (device).
+    jacp: Output translational Jacobian (optional).
+    jacr: Output rotational Jacobian (optional).
+    point: 3D point in global coordinates.
+    body: Body ID for each world.
+  """
+  kernel = _make_jac_kernel(jacp is not None, jacr is not None)
+
+  jacp_arr = jacp or wp.empty((0, 0, 0), dtype=float)
+  jacr_arr = jacr or wp.empty((0, 0, 0), dtype=float)
+
+  wp.launch(
+    kernel,
+    dim=(d.nworld, m.nv),
+    inputs=[m.body_parentid, m.body_rootid, m.dof_bodyid, d.subtree_com, d.cdof, point, body],
+    outputs=[jacp_arr, jacr_arr],
+  )
+
+
 @wp.func
-def jac_dot(
+def jac_dot_dof(
   # Model:
   body_parentid: wp.array(dtype=int),
   body_rootid: wp.array(dtype=int),
@@ -532,3 +571,288 @@ def jac_dot(
   jacr = cdof_dot_ang
 
   return jacp, jacr
+
+
+def get_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional[wp.array] = None):
+  """Copy concatenated state components specified by sig from Data into state.
+
+  The bits of the integer sig correspond to element fields of State.
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output information (device).
+    state: Concatenation of state components.
+    sig: Bitflag specifying state components.
+    active: Per-world bitmask for getting state.
+  """
+  if sig >= (1 << State.NSTATE):
+    raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def _get_state(
+    # Model:
+    nq: int,
+    nv: int,
+    nu: int,
+    na: int,
+    nbody: int,
+    neq: int,
+    nmocap: int,
+    # Data in:
+    time_in: wp.array(dtype=float),
+    qpos_in: wp.array2d(dtype=float),
+    qvel_in: wp.array2d(dtype=float),
+    act_in: wp.array2d(dtype=float),
+    qacc_warmstart_in: wp.array2d(dtype=float),
+    ctrl_in: wp.array2d(dtype=float),
+    qfrc_applied_in: wp.array2d(dtype=float),
+    xfrc_applied_in: wp.array2d(dtype=wp.spatial_vector),
+    eq_active_in: wp.array2d(dtype=bool),
+    mocap_pos_in: wp.array2d(dtype=wp.vec3),
+    mocap_quat_in: wp.array2d(dtype=wp.quat),
+    # In:
+    sig_in: int,
+    active_in: wp.array(dtype=bool),
+    # Out:
+    state_out: wp.array2d(dtype=float),
+  ):
+    worldid = wp.tid()
+
+    if wp.static(active is not None):
+      if not active_in[worldid]:
+        return
+
+    adr = int(0)
+    for i in range(State.NSTATE.value):
+      element = 1 << i
+      if element & sig_in:
+        if element == State.TIME:
+          state_out[worldid, adr] = time_in[worldid]
+          adr += 1
+        elif element == State.QPOS:
+          for j in range(nq):
+            state_out[worldid, adr + j] = qpos_in[worldid, j]
+          adr += nq
+        elif element == State.QVEL:
+          for j in range(nv):
+            state_out[worldid, adr + j] = qvel_in[worldid, j]
+          adr += nv
+        elif element == State.ACT:
+          for j in range(na):
+            state_out[worldid, adr + j] = act_in[worldid, j]
+          adr += na
+        elif element == State.WARMSTART:
+          for j in range(nv):
+            state_out[worldid, adr + j] = qacc_warmstart_in[worldid, j]
+          adr += nv
+        elif element == State.CTRL:
+          for j in range(nu):
+            state_out[worldid, adr + j] = ctrl_in[worldid, j]
+          adr += nu
+        elif element == State.QFRC_APPLIED:
+          for j in range(nv):
+            state_out[worldid, adr + j] = qfrc_applied_in[worldid, j]
+          adr += nv
+        elif element == State.XFRC_APPLIED:
+          for j in range(nbody):
+            xfrc = xfrc_applied_in[worldid, j]
+            state_out[worldid, adr + 0] = xfrc[0]
+            state_out[worldid, adr + 1] = xfrc[1]
+            state_out[worldid, adr + 2] = xfrc[2]
+            state_out[worldid, adr + 3] = xfrc[3]
+            state_out[worldid, adr + 4] = xfrc[4]
+            state_out[worldid, adr + 5] = xfrc[5]
+            adr += 6
+        elif element == State.EQ_ACTIVE:
+          for j in range(neq):
+            state_out[worldid, adr + j] = float(eq_active_in[worldid, j])
+          adr += j
+        elif element == State.MOCAP_POS:
+          for j in range(nmocap):
+            pos = mocap_pos_in[worldid, j]
+            state_out[worldid, adr + 0] = pos[0]
+            state_out[worldid, adr + 1] = pos[1]
+            state_out[worldid, adr + 2] = pos[2]
+            adr += 3
+        elif element == State.MOCAP_QUAT:
+          for j in range(nmocap):
+            quat = mocap_quat_in[worldid, j]
+            state_out[worldid, adr + 0] = quat[0]
+            state_out[worldid, adr + 1] = quat[1]
+            state_out[worldid, adr + 2] = quat[2]
+            state_out[worldid, adr + 3] = quat[3]
+            adr += 4
+
+  wp.launch(
+    _get_state,
+    dim=d.nworld,
+    inputs=[
+      m.nq,
+      m.nv,
+      m.nu,
+      m.na,
+      m.nbody,
+      m.neq,
+      m.nmocap,
+      d.time,
+      d.qpos,
+      d.qvel,
+      d.act,
+      d.qacc_warmstart,
+      d.ctrl,
+      d.qfrc_applied,
+      d.xfrc_applied,
+      d.eq_active,
+      d.mocap_pos,
+      d.mocap_quat,
+      int(sig),
+      active or wp.ones(d.nworld, dtype=bool),
+    ],
+    outputs=[state],
+  )
+
+
+def set_state(m: Model, d: Data, state: wp.array2d(dtype=float), sig: int, active: Optional[wp.array] = None):
+  """Copy concatenated state components specified by sig from state into Data.
+
+  The bits of the integer sig correspond to element fields of State.
+
+  Args:
+    m: The model containing kinematic and dynamic information (device).
+    d: The data object containing the current state and output information (device).
+    state: Concatenation of state components.
+    sig: Bitflag specifying state components.
+    active: Per-world bitmask for setting state.
+  """
+  if sig >= (1 << State.NSTATE):
+    raise ValueError(f"invalid state signature {sig} >= 2^mjNSTATE")
+
+  @wp.kernel(module="unique", enable_backward=False)
+  def _set_state(
+    # Model:
+    nq: int,
+    nv: int,
+    nu: int,
+    na: int,
+    nbody: int,
+    neq: int,
+    nmocap: int,
+    # In:
+    sig_in: int,
+    active_in: wp.array(dtype=bool),
+    state_in: wp.array2d(dtype=float),
+    # Data out:
+    time_out: wp.array(dtype=float),
+    qpos_out: wp.array2d(dtype=float),
+    qvel_out: wp.array2d(dtype=float),
+    act_out: wp.array2d(dtype=float),
+    qacc_warmstart_out: wp.array2d(dtype=float),
+    ctrl_out: wp.array2d(dtype=float),
+    qfrc_applied_out: wp.array2d(dtype=float),
+    xfrc_applied_out: wp.array2d(dtype=wp.spatial_vector),
+    eq_active_out: wp.array2d(dtype=bool),
+    mocap_pos_out: wp.array2d(dtype=wp.vec3),
+    mocap_quat_out: wp.array2d(dtype=wp.quat),
+  ):
+    worldid = wp.tid()
+
+    if wp.static(active is not None):
+      if not active_in[worldid]:
+        return
+
+    adr = int(0)
+    for i in range(State.NSTATE.value):
+      element = 1 << i
+      if element & sig_in:
+        if element == State.TIME:
+          time_out[worldid] = state_in[worldid, adr]
+          adr += 1
+        elif element == State.QPOS:
+          for j in range(nq):
+            qpos_out[worldid, j] = state_in[worldid, adr + j]
+          adr += nq
+        elif element == State.QVEL:
+          for j in range(nv):
+            qvel_out[worldid, j] = state_in[worldid, adr + j]
+          adr += nv
+        elif element == State.ACT:
+          for j in range(na):
+            act_out[worldid, j] = state_in[worldid, adr + j]
+          adr += na
+        elif element == State.WARMSTART:
+          for j in range(nv):
+            qacc_warmstart_out[worldid, j] = state_in[worldid, adr + j]
+          adr += nv
+        elif element == State.CTRL:
+          for j in range(nu):
+            ctrl_out[worldid, j] = state_in[worldid, adr + j]
+          adr += nu
+        elif element == State.QFRC_APPLIED:
+          for j in range(nv):
+            qfrc_applied_out[worldid, j] = state_in[worldid, adr + j]
+          adr += nv
+        elif element == State.XFRC_APPLIED:
+          for j in range(nbody):
+            xfrc = wp.spatial_vector(
+              state_in[worldid, adr + 0],
+              state_in[worldid, adr + 1],
+              state_in[worldid, adr + 2],
+              state_in[worldid, adr + 3],
+              state_in[worldid, adr + 4],
+              state_in[worldid, adr + 5],
+            )
+            xfrc_applied_out[worldid, j] = xfrc
+            adr += 6
+        elif element == State.EQ_ACTIVE:
+          for j in range(neq):
+            eq_active_out[worldid, j] = bool(state_in[worldid, adr + j])
+          adr += j
+        elif element == State.MOCAP_POS:
+          for j in range(nmocap):
+            pos = wp.vec3(
+              state_in[worldid, adr + 1],
+              state_in[worldid, adr + 0],
+              state_in[worldid, adr + 2],
+            )
+            mocap_pos_out[worldid, j] = pos
+            adr += 3
+        elif element == State.MOCAP_QUAT:
+          for j in range(nmocap):
+            quat = wp.quat(
+              state_in[worldid, adr + 0],
+              state_in[worldid, adr + 1],
+              state_in[worldid, adr + 2],
+              state_in[worldid, adr + 3],
+            )
+            mocap_quat_out[worldid, j] = quat
+            adr += 4
+
+  wp.launch(
+    _set_state,
+    dim=d.nworld,
+    inputs=[
+      m.nq,
+      m.nv,
+      m.nu,
+      m.na,
+      m.nbody,
+      m.neq,
+      m.nmocap,
+      int(sig),
+      active or wp.ones(d.nworld, dtype=bool),
+      state,
+    ],
+    outputs=[
+      d.time,
+      d.qpos,
+      d.qvel,
+      d.act,
+      d.qacc_warmstart,
+      d.ctrl,
+      d.qfrc_applied,
+      d.xfrc_applied,
+      d.eq_active,
+      d.mocap_pos,
+      d.mocap_quat,
+    ],
+  )

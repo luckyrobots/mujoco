@@ -50,12 +50,36 @@ MJAPI mjtNum mju_muscleDynamicsTimescale(mjtNum dctrl, mjtNum tau_act, mjtNum ta
 // muscle activation dynamics, prm = (tau_act, tau_deact, smoothing_width)
 MJAPI mjtNum mju_muscleDynamics(mjtNum ctrl, mjtNum act, const mjtNum prm[3]);
 
+// LuGre Stribeck function: g(v) = F_C + (F_S - F_C) * exp(-(v/v_S)^2)
+mjtNum mj_lugreStribeck(mjtNum velocity, mjtNum F_C, mjtNum F_S, mjtNum v_S);
+
+// DC motor activation slot indices (-1 = slot not active)
+typedef struct {
+  int slew;         // slew rate state
+  int integral;     // integral state
+  int temperature;  // temperature state
+  int bristle;      // LuGre bristle state
+  int current;      // current state
+  int num_slots;    // number of DC motor states
+} mjDCMotorSlots;
+
+// compute activation slot indices for a DC motor actuator
+// dynprm = actuator_dynprm row, gainprm = actuator_gainprm row
+mjDCMotorSlots mj_dcmotorSlots(const mjtNum* dynprm, const mjtNum* gainprm);
+
 // all 3 semi-axes of a geom
 MJAPI void mju_geomSemiAxes(mjtNum semiaxes[3], const mjtNum size[3], mjtGeom type);
 
 // return 1 if point is inside a primitive geom, 0 otherwise
 int mju_insideGeom(const mjtNum pos[3], const mjtNum mat[9], const mjtNum size[3], mjtGeom type,
                    const mjtNum point[3]);
+
+// compute ray origin and direction for pixel (col, row) in camera image
+// directions are normalized so ray functions return actual 3D distance
+void mju_camPixelRay(mjtNum origin[3], mjtNum direction[3],
+                     const mjtNum cam_xpos[3], const mjtNum cam_xmat[9],
+                     int col, int row, mjtNum fx, mjtNum fy, mjtNum cx, mjtNum cy,
+                     int projection, mjtNum ortho_extent);
 
 // ----------------------------- Flex interpolation ------------------------------------------------
 
@@ -68,7 +92,7 @@ MJAPI mjtNum mju_evalBasis(const mjtNum x[3], int i, int order);
 // interpolate a function at x with given interpolation coefficients and order n
 MJAPI void mju_interpolate3D(mjtNum res[3], const mjtNum x[3], const mjtNum* coeff, int order);
 
-// ----------------------------- Base64 -----------------------------------------------------------
+// ----------------------------- Base64 ------------------------------------------------------------
 
 // encode data as Base64 into buf (including padding and null char)
 // returns number of chars written in buf: 4 * [(ndata + 2) / 3] + 1
@@ -82,7 +106,31 @@ MJAPI size_t mju_isValidBase64(const char* s);
 // returns number of bytes decoded (upper limit of 3 * (strlen(s) / 4))
 MJAPI size_t mju_decodeBase64(uint8_t* buf, const char* s);
 
-//------------------------------ miscellaneous ----------------------------------------------------
+//------------------------------ history buffers ---------------------------------------------------
+
+// buffer layout: [user(1), cursor(1), times(n), values(n*dim)]
+// - user: 1 mjtNum reserved for user data (ignored by these functions)
+// - cursor: 1 mjtNum for circular buffer index (integer stored as mjtNum)
+// - times: n timestamps, contiguous at buf[2..n+1]
+// - values: n*dim values, contiguous at buf[n+2..n+2+n*dim-1]
+// total buffer size: 2 + n*(1 + dim)
+
+// initialize history buffer with given times and values; times must be strictly increasing
+// values is size n x dim
+MJAPI void mju_historyInit(mjtNum* buf, int n, int dim, const mjtNum* times,
+                           const mjtNum* values, mjtNum user);
+
+// find insertion slot for sample at time t, maintaining sorted order
+// returns pointer to value slot (size dim) where caller should write
+MJAPI mjtNum* mju_historyInsert(mjtNum* buf, int n, int dim, mjtNum t);
+
+// read vector value at time t; interp: 0=zero-order-hold, 1=linear, 2=cubic spline
+// returns pointer to sample in buffer on exact match (res untouched)
+// returns NULL and writes interpolated result to res otherwise
+MJAPI const mjtNum* mju_historyRead(const mjtNum* buf, int n, int dim,
+                                    mjtNum* res, mjtNum t, int interp);
+
+//------------------------------ miscellaneous -----------------------------------------------------
 
 // convert contact force to pyramid representation
 MJAPI void mju_encodePyramid(mjtNum* pyramid, const mjtNum* force,
@@ -151,6 +199,9 @@ MJAPI void mju_zeroInt(int* res, int n);
 // copy int vector vec into res
 MJAPI void mju_copyInt(int* res, const int* vec, int n);
 
+// fill int vector with val
+void mju_fillInt(int* res, int val, int n);
+
 // standard normal random number generator (optional second number)
 MJAPI mjtNum mju_standardNormal(mjtNum* num2);
 
@@ -204,6 +255,17 @@ MJAPI mjtNum mju_Halton(int index, int base);
 
 // call strncpy, then set dst[n-1] = 0
 MJAPI char* mju_strncpy(char *dst, const char *src, int n);
+
+// polynomial force coefficient: force = -mju_polyForce(...) * x
+//   flg_odd=0: linear + poly[0]*x   + poly[1]*x^2 + ...
+//   flg_odd=1: linear + poly[0]*|x| + poly[1]*x^2 + ...
+MJAPI mjtNum mju_polyForce(mjtNum linear, const mjtNum* poly, mjtNum x, int n, int flg_odd);
+
+// derivative of (mju_polyForce * x) w.r.t. x
+MJAPI mjtNum mjd_xPolyForce(mjtNum linear, const mjtNum* poly, mjtNum x, int n, int flg_odd);
+
+// potential energy: integral from 0 to x of mju_polyForce * t dt
+MJAPI mjtNum mju_polyPotential(mjtNum linear, const mjtNum* poly, mjtNum x, int n, int flg_odd);
 
 // sigmoid function over 0<=x<=1 using quintic polynomial
 MJAPI mjtNum mju_sigmoid(mjtNum x);

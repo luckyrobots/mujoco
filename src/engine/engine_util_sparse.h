@@ -32,6 +32,11 @@ extern "C" {
 MJAPI mjtNum mju_dotSparse2(const mjtNum* vec1, const int* ind1, int nnz1,
                             const mjtNum* vec2, const int* ind2, int nnz2);
 
+// dot-productX3, first vector is sparse; supernode of size 3
+void mju_dotSparseX3(mjtNum* res0, mjtNum* res1, mjtNum* res2,
+                     const mjtNum* vec10, const mjtNum* vec11, const mjtNum* vec12,
+                     const mjtNum* vec2, int nnz1, const int* ind1);
+
 // convert matrix from dense to sparse
 //  nnz is size of res and colind, return 1 if too small, 0 otherwise
 MJAPI int mju_dense2sparse(mjtNum* res, const mjtNum* mat, int nr, int nc,
@@ -40,6 +45,13 @@ MJAPI int mju_dense2sparse(mjtNum* res, const mjtNum* mat, int nr, int nc,
 // convert matrix from sparse to dense
 MJAPI void mju_sparse2dense(mjtNum* res, const mjtNum* mat, int nr, int nc, const int* rownnz,
                             const int* rowadr, const int* colind);
+
+// res[row, :] = mat[row, :]
+void mju_copySparse(mjtNum* res, const mjtNum* mat, const int* rownnz, const int* rowadr,
+                    const int* row, int nrow);
+
+// res[row, :] = 0
+void mju_zeroSparse(mjtNum* res, const int* rownnz, const int* rowadr, const int* row, int nrow);
 
 // multiply sparse matrix and dense vector:  res = mat * vec
 MJAPI void mju_mulMatVecSparse(mjtNum* res, const mjtNum* mat, const mjtNum* vec,

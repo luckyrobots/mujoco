@@ -29,7 +29,7 @@ set(MSVC_INCREMENTAL_DEFAULT ON)
 
 project(
   mujoco
-  VERSION 3.3.8
+  VERSION 3.7.0
   DESCRIPTION "MuJoCo Physics Simulator"
   HOMEPAGE_URL "https://mujoco.org"
 )
@@ -39,29 +39,22 @@ enable_language(CXX)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
-option(MUJOCO_BUILD_EXAMPLES "Build samples for MuJoCo" ON)
-option(MUJOCO_BUILD_SIMULATE "Build simulate library for MuJoCo" ON)
-option(MUJOCO_BUILD_TESTS "Build tests for MuJoCo" ON)
-option(MUJOCO_TEST_PYTHON_UTIL "Build and test utility libraries for Python bindings" ON)
-option(MUJOCO_WITH_USD "Build with OpenUSD" OFF)
+if(NOT EMSCRIPTEN)
+  option(MUJOCO_BUILD_EXAMPLES "Build samples for MuJoCo" ON)
+  option(MUJOCO_BUILD_SIMULATE "Build simulate library for MuJoCo" ON)
+  option(MUJOCO_BUILD_STUDIO "Build studio library for MuJoCo" OFF)
+  option(MUJOCO_BUILD_TESTS "Build tests for MuJoCo" ON)
+  option(MUJOCO_TEST_PYTHON_UTIL "Build and test utility libraries for Python bindings" ON)
+  option(MUJOCO_WITH_USD "Build with OpenUSD" OFF)
+  option(MUJOCO_USE_FILAMENT "Use filament rendering" OFF)
+  # Allows filament renderer to be used with mjr API; disables src/render to prevent conflicts.
+  option(MUJOCO_USE_FILAMENT_MJR_COMPAT "Use filament mjr compatibility layer" OFF)
+endif()
 
-# Option to provide a path to an existing USD build directory or to Houdini HFS directory.
-set(USD_DIR "" CACHE PATH "Path to an existing USD build directory.")
-set(HOUDINI_HFS_DIR "" CACHE PATH "Path to Houdini HFS directory to build USD plugins against.")
-if(USD_DIR)
-  if(EXISTS "${USD_DIR}")
-    # If the path is provided, set MUJOCO_WITH_USD to ON and add the path to CMAKE_PREFIX_PATH.
-    set(MUJOCO_WITH_USD ON CACHE BOOL "Build with OpenUSD" FORCE)
-    list(PREPEND CMAKE_PREFIX_PATH "${USD_DIR}")
-    message(STATUS "Using custom USD build directory: ${USD_DIR}")
-  else()
-    message(WARNING "Invalid path provided for USD_DIR: ${USD_DIR}")
-  endif()
-elseif(HOUDINI_HFS_DIR)
-  if(EXISTS "${HOUDINI_HFS_DIR}")
-    set(MUJOCO_WITH_USD ON CACHE BOOL "Build with OpenUSD" FORCE)
-    message(STATUS "Building Mujoco USD against Houdini HFS: ${HOUDINI_HFS_DIR}")
-  endif()
+if(EMSCRIPTEN)
+  option(MUJOCO_BUILD_TESTS_WASM "Build tests for WASM bindings" ON)
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++20 -O3 -pthread -fexceptions")
 endif()
 
 if(APPLE AND (MUJOCO_BUILD_EXAMPLES OR MUJOCO_BUILD_SIMULATE))
@@ -97,7 +90,13 @@ else()
   set(MUJOCO_RESOURCE_FILES "")
 endif()
 
-add_library(mujoco SHARED ${MUJOCO_RESOURCE_FILES})
+# Emscripten does not support SHARED libs
+if(NOT EMSCRIPTEN)
+  add_library(mujoco SHARED ${MUJOCO_RESOURCE_FILES})
+else()
+  add_library(mujoco STATIC ${MUJOCO_RESOURCE_FILES})
+endif()
+
 target_include_directories(
   mujoco
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -105,16 +104,35 @@ target_include_directories(
   PRIVATE src
 )
 
-add_subdirectory(plugin/elasticity)
-add_subdirectory(plugin/actuator)
-add_subdirectory(plugin/sensor)
-add_subdirectory(plugin/sdf)
+if(NOT EMSCRIPTEN)
+  add_subdirectory(plugin/elasticity)
+  add_subdirectory(plugin/actuator)
+  add_subdirectory(plugin/sensor)
+  add_subdirectory(plugin/sdf)
+endif()
+add_subdirectory(plugin/obj_decoder)
+add_subdirectory(plugin/stl_decoder)
+
 add_subdirectory(src/engine)
 add_subdirectory(src/user)
 add_subdirectory(src/xml)
-add_subdirectory(src/render)
 add_subdirectory(src/thread)
-add_subdirectory(src/ui)
+if(NOT EMSCRIPTEN AND NOT MUJOCO_USE_FILAMENT_MJR_COMPAT)
+  add_subdirectory(src/render/classic)
+  add_subdirectory(src/ui)
+endif()
+
+if(MUJOCO_USE_FILAMENT AND NOT EMSCRIPTEN)
+  add_subdirectory(src/experimental/filament)
+endif()
+
+if(EMSCRIPTEN)
+  add_subdirectory(wasm)
+  if(MUJOCO_BUILD_TESTS_WASM)
+    add_subdirectory(wasm/tests)
+  endif()
+endif()
+
 
 target_compile_definitions(mujoco PRIVATE _GNU_SOURCE CCD_STATIC_DEFINE MUJOCO_DLL_EXPORTS -DMC_IMPLEM_ENABLE)
 if(MUJOCO_ENABLE_AVX_INTRINSICS)
@@ -198,13 +216,37 @@ if(MUJOCO_BUILD_SIMULATE)
   add_subdirectory(simulate)
 endif()
 
+if(MUJOCO_BUILD_STUDIO)
+  add_subdirectory(src/experimental/mjz)
+  add_subdirectory(src/experimental/platform)
+  add_subdirectory(src/experimental/studio)
+endif()
+
 if(MUJOCO_BUILD_EXAMPLES)
   add_subdirectory(sample)
 endif()
 
 if(MUJOCO_WITH_USD)
-  target_compile_definitions(mujoco PUBLIC mjUSEUSD)
+  include(third_party_deps/openusd)
+
+  get_filename_component(USD_INSTALL_ROOT "${pxr_DIR}/lib" ABSOLUTE)
+  install(
+    DIRECTORY ${USD_INSTALL_ROOT}/
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  )
+
+  if(APPLE)
+    set_target_properties(mujoco PROPERTIES
+      BUILD_RPATH "${USD_INSTALL_ROOT}"
+      INSTALL_RPATH "@loader_path")
+  elseif(UNIX)
+    set_target_properties(mujoco PROPERTIES
+      BUILD_RPATH "${USD_INSTALL_ROOT}"
+      INSTALL_RPATH "$ORIGIN")
+  endif()
+
   add_subdirectory(src/experimental/usd)
+  add_subdirectory(plugin/usd_decoder)
 endif()
 
 if(BUILD_TESTING AND MUJOCO_BUILD_TESTS)
@@ -216,9 +258,14 @@ if(BUILD_TESTING AND MUJOCO_BUILD_TESTS)
 endif()
 
 if(NOT (APPLE AND MUJOCO_BUILD_MACOS_FRAMEWORKS))
+  set(MUJOCO_TARGETS mujoco)
+  if (EMSCRIPTEN)
+    list(APPEND MUJOCO_TARGETS lodepng)
+  endif()
+
   # Install the libraries.
   install(
-    TARGETS mujoco
+    TARGETS ${MUJOCO_TARGETS}
     EXPORT ${PROJECT_NAME}
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT runtime
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT runtime

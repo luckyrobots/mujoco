@@ -74,11 +74,13 @@ from mujoco.mjx._src.types import Data
 from mujoco.mjx._src.types import DataJAX
 from mujoco.mjx._src.types import DisableBit
 from mujoco.mjx._src.types import GeomType
+from mujoco.mjx._src.types import Impl
 from mujoco.mjx._src.types import Model
 from mujoco.mjx._src.types import ModelJAX
 from mujoco.mjx._src.types import OptionJAX
 # pylint: enable=g-importing-member
 import numpy as np
+
 
 # pair-wise collision functions
 _COLLISION_FUNC = {
@@ -111,6 +113,8 @@ _COLLISION_FUNC = {
     (GeomType.MESH, GeomType.MESH): convex_convex,
 }
 
+# Maximum constraint dimension for collision functions.
+_MAX_NCON = 8
 
 # geoms for which we ignore broadphase
 _GEOM_NO_BROADPHASE = {GeomType.HFIELD, GeomType.PLANE}
@@ -272,15 +276,15 @@ def _contact_groups(m: Model, d: Data) -> Dict[FunctionKey, Contact]:
       # pair contacts get their params from m.pair_* fields
       params.append((
           m.pair_margin[ip] - m.pair_gap[ip],
-          jp.clip(m.pair_friction[ip], a_min=eps),
+          jp.clip(m.pair_friction[ip], min=eps),
           m.pair_solref[ip],
           m.pair_solreffriction[ip],
           m.pair_solimp[ip],
       ))
     if geom1.size > 0 and geom2.size > 0:
       # other contacts get their params from geom fields
-      margin = jp.maximum(m.geom_margin[geom1], m.geom_margin[geom2])
-      gap = jp.maximum(m.geom_gap[geom1], m.geom_gap[geom2])
+      margin = m.geom_margin[geom1] + m.geom_margin[geom2]
+      gap = m.geom_gap[geom1] + m.geom_gap[geom2]
       solmix1, solmix2 = m.geom_solmix[geom1], m.geom_solmix[geom2]
       mix = solmix1 / (solmix1 + solmix2)
       mix = jp.where((solmix1 < eps) & (solmix2 < eps), 0.5, mix)
@@ -341,8 +345,13 @@ def _numeric(m: Union[Model, mujoco.MjModel], name: str) -> int:
   return int(m.numeric_data[id_]) if id_ >= 0 else -1
 
 
-def make_condim(m: Union[Model, mujoco.MjModel]) -> np.ndarray:
+def make_condim(
+    m: Union[Model, mujoco.MjModel], impl: Impl = Impl.JAX
+) -> np.ndarray:
   """Returns the dims of the contacts for a Model."""
+  if impl != Impl.JAX:
+    raise ValueError('make_condim only supports JAX backend.')
+
   if isinstance(m, mujoco.MjModel):
     sdf_initpoints = m.opt.sdf_initpoints
   elif isinstance(m.opt._impl, OptionJAX):
@@ -377,8 +386,14 @@ def make_condim(m: Union[Model, mujoco.MjModel]) -> np.ndarray:
     if k.types[1] == mujoco.mjtGeom.mjGEOM_SDF:
       ncon = sdf_initpoints
     else:
-      func = _COLLISION_FUNC[k.types]
-      ncon = func.ncon  # pytype: disable=attribute-error
+      func = _COLLISION_FUNC.get(k.types, None)
+      if func is not None:
+        ncon = func.ncon  # pytype: disable=attribute-error
+      else:
+        raise ValueError(
+            f'Collision function not found for geom types {k.types[0]},',
+            f'{k.types[1]}'
+        )
     num_contacts = condim_counts.get(k.condim, 0) + ncon * v
     if max_contact_points > -1:
       num_contacts = min(max_contact_points, num_contacts)

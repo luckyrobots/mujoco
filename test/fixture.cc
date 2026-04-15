@@ -41,6 +41,7 @@
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjxmacro.h>
 #include <mujoco/mujoco.h>
+#include "src/xml/xml_global.h"
 
 namespace mujoco {
 namespace {
@@ -85,26 +86,27 @@ const std::string GetModelPath(std::string_view path) {  // NOLINT
 
 mjModel* LoadModelFromString(std::string_view xml, char* error,
                              int error_size, mjVFS* vfs) {
-  // register string resource provider if not registered before
-  if (mjp_getResourceProvider("LoadModelFromString:") == nullptr) {
-    mjpResourceProvider resourceProvider;
-    mjp_defaultResourceProvider(&resourceProvider);
-    resourceProvider.prefix = "LoadModelFromString";
-    resourceProvider.open = +[](mjResource* resource) {
-      resource->data = &(resource->name[strlen("LoadModelFromString:")]);
-      return 1;
-    };
-    resourceProvider.read =
-        +[](mjResource* resource, const void** buffer) {
-          *buffer = resource->data;
-          return (int) strlen((const char*) resource->data);
-        };
-    resourceProvider.close = +[](mjResource* resource) {};
-    mjp_registerResourceProvider(&resourceProvider);
+  if (error) {
+    error[0] = '\0';
   }
-  std::string xml2 = {xml.begin(), xml.end()};
-  std::string str = "LoadModelFromString:" +  xml2;
-  return mj_loadXML(str.c_str(), vfs, error, error_size);
+
+  // This duplicates the logic in mj_loadXML, but allows us to use a string
+  // directly rather than having to write the contents to a file. Most
+  // importantly, we "save" the spec to global storage so that subsequent calls
+  // to mj_saveLastXML will be done using the parsed mjSpec.
+  mjSpec* spec = mj_parseXMLString(xml.data(), vfs, error, error_size);
+
+  mjModel* model = nullptr;
+  if (spec) {
+    model = mj_compile(spec, vfs);
+
+    if (error && (!model || mjs_isWarning(spec))) {
+      strncpy(error, mjs_getError(spec), error_size);
+      error[error_size - 1] = '\0';
+    }
+  }
+  SetGlobalXmlSpec(spec);
+  return model;
 }
 
 static void AssertModelNotNull(mjModel* model,
@@ -201,6 +203,10 @@ auto Compare(unsigned char val1, unsigned char val2) {
   return val1 != val2;
 }
 
+auto Compare(mjtSize val1, mjtSize val2) {
+  return val1 > val2 ? val1 - val2 : val2 - val1;
+}
+
 // The maximum spacing between a normalised floating point number x and an
 // adjacent normalised number is 2 epsilon |x|; a factor 10 is added accounting
 // for losses during non-idempotent operations such as vector normalizations.
@@ -232,18 +238,14 @@ mjtNum CompareModel(const mjModel* m1, const mjModel* m2,
   MJMODEL_POINTERS_PREAMBLE(m1);
 
 // compare ints, exclude nbuffer because it hides the actual difference
-// TODO(kylebayes): re-enable poly comparisons.
-#define X(name)                                               \
-  if constexpr (std::string_view(#name) != "nbuffer" &&       \
-                std::string_view(#name) != "nmeshpolymap" &&  \
-                std::string_view(#name) != "nmeshpolyvert" && \
-                std::string_view(#name) != "nmeshpoly") {     \
-    if (m1->name != m2->name) {                               \
-      maxdif = std::abs((long)m1->name - (long)m2->name);     \
-      field = #name;                                          \
-    }                                                         \
+#define X(name)                                           \
+  if constexpr (std::string_view(#name) != "nbuffer") {   \
+    if (m1->name != m2->name) {                           \
+      maxdif = std::abs((long)m1->name - (long)m2->name); \
+      field = #name;                                      \
+    }                                                     \
   }
-  MJMODEL_INTS
+  MJMODEL_SIZES
 #undef X
   if (maxdif > 0) return maxdif;
 
@@ -268,19 +270,16 @@ mjtNum CompareModel(const mjModel* m1, const mjModel* m2,
   MJMODEL_POINTERS
 #undef X
 
-  // compare scalars in mjOption
-  #define X(type, name)                                            \
+  // compare fields in mjOption
+  #define X(type, name, n)                                         \
     dif = Compare(m1->opt.name, m2->opt.name);                     \
     if (dif > maxdif) {maxdif = dif; field = #name;}
-    MJOPTION_SCALARS
-  #undef X
-
-  // compare arrays in mjOption
-  #define X(name, n)                                             \
+  #define XVEC(type, name, n)                                    \
     for (int c=0; c < n; c++) {                                  \
       dif = Compare(m1->opt.name[c], m2->opt.name[c]);           \
       if (dif > maxdif) {maxdif = dif; field = #name;} }
-    MJOPTION_VECTORS
+    MJOPTION_FIELDS
+  #undef XVEC
   #undef X
 
   // Return largest difference and field name
@@ -309,21 +308,6 @@ MockFilesystem::MockFilesystem(std::string unit_test_name) {
     MockFilesystem *fs = static_cast<MockFilesystem*>(resource->provider->data);
     std::string filename = fs->StripPrefix(resource->name);
     return (int) fs->GetFile(filename, (const unsigned char**) buffer);
-  };
-
-  resourceProvider.getdir = +[](mjResource* resource, const char** dir,
-                                int* ndir) {
-    MockFilesystem *fs = static_cast<MockFilesystem*>(resource->provider->data);
-    *dir = resource->name;
-
-    // find last directory path separator
-    int length = fs->Prefix().size() + 1;
-    for (int i = length; resource->name[i]; ++i) {
-     if (resource->name[i] == '/' || resource->name[i] == '\\') {
-        length = i + 1;
-      }
-    }
-    *ndir = length;
   };
 
   resourceProvider.close = +[](mjResource* resource) {};

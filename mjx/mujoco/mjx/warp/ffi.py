@@ -25,7 +25,7 @@ from jax import numpy as jp
 from mujoco.mjx.warp import types as mjx_warp_types
 import numpy as np
 import warp as wp
-from mujoco.mjx.third_party.warp.jax_experimental import ffi
+from mujoco.mjx.third_party.warp._src.jax_experimental import ffi
 
 
 def flatten_signature(signature: inspect.Signature, args: Tuple[Any, ...]):
@@ -101,13 +101,19 @@ def jax_callable_variadic_tuple(
     vmap_method: Optional[str] = None,
     output_dims: Optional[dict[str, tuple[int, ...]]] = None,
     in_out_argnames: Optional[Sequence[str]] = None,
+    stage_in_argnames: Optional[Sequence[str]] = None,
+    stage_out_argnames: Optional[Sequence[str]] = None,
+    has_side_effect: bool = False,
 ):
   """Wraps a JAX callable to support variadic tuples and dataclasses."""
 
   def callable_wrapper(*args, **kwargs):
     def func_wrapper(*flat_args, **kwargs):
-      unflat_args = jax.tree.unflatten(in_tree, flat_args)
-      return func(*unflat_args, **kwargs)
+      num_inputs = in_tree.num_leaves
+      flat_inputs = flat_args[:num_inputs]
+      output_buffers = flat_args[num_inputs:]
+      unflat_args = jax.tree.unflatten(in_tree, flat_inputs)
+      return func(*unflat_args, *output_buffers, **kwargs)
 
     # Provide a flattened signature for the Warp callable machinery.
     new_signature = flatten_signature(inspect.signature(func), args)
@@ -127,6 +133,9 @@ def jax_callable_variadic_tuple(
         vmap_method=vmap_method,
         output_dims=output_dims,
         in_out_argnames=in_out_argnames,
+        stage_in_argnames=stage_in_argnames,
+        stage_out_argnames=stage_out_argnames,
+        has_side_effect=has_side_effect,
     )
 
     flat_args, in_tree = jax.tree.flatten(args)
@@ -147,7 +156,7 @@ def _format_arg(arg: Any, name: str, annotation: Any, verbose: bool):
         for i in range(len(arg))
     )
 
-  if not isinstance(annotation, wp.types.array):
+  if not isinstance(annotation, wp.array):
     if verbose:
       print(f'Skipping {name}: {arg}')
     return arg
@@ -245,11 +254,11 @@ def _squeeze_dim(leaf_expanded: Any, leaf: Any) -> Any:
   return leaf_expanded
 
 
-def marshal_jax_warp_callable(func):
+def marshal_jax_warp_callable(func, tree_map_output: bool = False):
   """Marshal fields into a MuJoCo Warp function."""
 
   @functools.wraps(func)
-  def wrapper(m, d):
+  def wrapper(m, d, *extra_args):
     # Expand dims for Warp implicit vmap before calling into the FFI wrapped
     # function.
     m_expanded = jax.tree.map_with_path(
@@ -264,7 +273,10 @@ def marshal_jax_warp_callable(func):
         ),
         d,
     )
-    d_expanded_result = func(m_expanded, d_expanded)
+    d_expanded_result = func(m_expanded, d_expanded, *extra_args)
+
+    if tree_map_output:
+      return d_expanded_result
     d_result = jax.tree.map(_squeeze_dim, d_expanded_result, d)
     return d_result
 
@@ -350,11 +362,14 @@ def _check_leading_dim(
     )
 
 
-def marshal_custom_vmap(vmap_func):
+def marshal_custom_vmap(
+    vmap_func,
+    tree_map_output: bool = False,
+):
   """Marshal fields for a custom vmap into an MuJoCo Warp function."""
 
   @functools.wraps(vmap_func)
-  def wrapper(axis_size, is_batched, m, d):
+  def wrapper(axis_size, is_batched, m, d, *extra_args):
     # Vmappable data fields may not have been broadcasted if vmap_func is called
     # within a vmap trace. Since data fields are read/write in warp, we need to
     # explicitly broadcast them here.
@@ -385,8 +400,14 @@ def marshal_custom_vmap(vmap_func):
         d_broadcast,
     )
     d_broadcast_flat_result, out_batched = vmap_func(
-        axis_size, is_batched, m_flat, d_broadcast_flat
+        axis_size, is_batched, m_flat, d_broadcast_flat, *extra_args
     )
+    if tree_map_output:
+      out = jax.tree.map(
+          lambda x: x.reshape(axis_size, -1), d_broadcast_flat_result
+      )
+      return out, out_batched
+
     # Explicitly mark MuJoCo Warp data fields as batched after vmapping is done.
     out_batched = jax.tree.map_with_path(
         # NB: if a field is not in MuJoCo Warp, we let JAX do its magic.

@@ -136,7 +136,7 @@ class ModelIOTest(parameterized.TestCase):
 
   @parameterized.product(
       xml=(_MULTIPLE_CONVEX_OBJECTS, _MULTIPLE_CONSTRAINTS),
-      impl=('jax', 'c', 'warp'),
+      impl=('jax', 'warp', 'cpp'),
   )
   @mock.patch.dict(os.environ, {'MJX_GPU_DEFAULT_WARP': 'true'})
   def test_put_model(self, xml, impl):
@@ -171,16 +171,15 @@ class ModelIOTest(parameterized.TestCase):
     if impl == 'jax':
       # fields restricted to MuJoCo should not be populated
       self.assertFalse(hasattr(mx, 'bvh_aabb'))
-    elif impl == 'c':
-      # Options specific to C are populated.
-      self.assertEqual(mx.opt._impl.noslip_iterations, m.opt.noslip_iterations)
-      # Fields private to C backend impl are populated.
-      self.assertTrue(hasattr(mx._impl, 'bvh_aabb'))
+
     elif impl == 'warp':
       # Options specific to Warp are populated.
       self.assertTrue(hasattr(mx.opt._impl, 'ls_parallel'))
       # Fields private to Warp backend impl are populated.
       self.assertTrue(hasattr(mx._impl, 'nxn_geom_pair'))
+    elif impl == 'cpp':
+      self.assertTrue(hasattr(mx._impl, 'pointer_lo'))
+      self.assertTrue(hasattr(mx._impl, 'pointer_hi'))
 
     np.testing.assert_allclose(mx.body_parentid, m.body_parentid)
     np.testing.assert_allclose(mx.geom_type, m.geom_type)
@@ -331,6 +330,48 @@ class ModelIOTest(parameterized.TestCase):
 
     _ = jax.tree.map_with_path(check_ndim, mx)
 
+  @parameterized.parameters('JAX', 'WARP', None)
+  def test_put_model_warp_graph_mode(self, mode: str | None):
+    """Tests that put_model accepts graph_mode parameter."""
+    if not mjxw.WARP_INSTALLED:
+      self.skipTest('Warp not installed.')
+    if not mjx_io.has_cuda_gpu_device():
+      self.skipTest('No CUDA GPU device available.')
+
+    if mode is None:
+      graph_mode = None
+    else:
+      graph_mode = getattr(mjxw_types.GraphMode, mode)
+
+    m = mujoco.MjModel.from_xml_string(_SIMPLE_BODY)
+    mx = mjx.put_model(m, impl='warp', graph_mode=graph_mode)
+
+    expected = graph_mode or mjxw_types.GraphMode.WARP
+    self.assertEqual(mx.opt._impl.graph_mode, expected)
+
+  def test_unsupported_contact_types(self):
+    """Tests that unsupported contact types raise an error."""
+    m = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <asset>
+          <mesh name="box" vertex="-1 -1 -1 1 -1 -1 1 1 -1 1 1 1 1 -1 1 -1 1 -1 -1 1 1 -1 -1 1" scale="1 1 .1"/>
+        </asset>
+        <worldbody>
+        <body name="meshbox">
+          <freejoint/>
+          <geom type="mesh" mesh="box" pos="0 0 -.15" euler="3 7 30"/>
+        </body>
+        <body name="cylinder">
+          <freejoint/>
+          <geom type="cylinder" size="1.0 0.1"/>
+        </body>
+        </worldbody>
+      </mujoco>
+    """)
+
+    with self.assertRaises(ValueError):
+      mjx.make_data(m, impl='jax')
+
 
 class DataIOTest(parameterized.TestCase):
   """IO tests for mjx.Data."""
@@ -341,7 +382,7 @@ class DataIOTest(parameterized.TestCase):
       self.tempdir = tempfile.TemporaryDirectory()
       wp.config.kernel_cache_dir = self.tempdir.name
 
-  @parameterized.parameters('jax', 'c')
+  @parameterized.parameters('jax', 'cpp')
   def test_make_data(self, impl: str):
     """Test that make_data returns the correct shapes."""
     m = mujoco.MjModel.from_xml_string(_MULTIPLE_CONVEX_OBJECTS)
@@ -354,7 +395,7 @@ class DataIOTest(parameterized.TestCase):
     nv = 19
     nefc = 185
 
-    self.assertEqual(d._impl.nefc, nefc)
+    # Check public Data fields that exist for all impls
     self.assertEqual(d.qpos.shape, (nq,))
     self.assertEqual(d.qvel.shape, (nv,))
     self.assertEqual(d.act.shape, (0,))
@@ -375,14 +416,20 @@ class DataIOTest(parameterized.TestCase):
     self.assertEqual(d.geom_xpos.shape, (6, 3))
     self.assertEqual(d.geom_xmat.shape, (6, 3, 3))
     self.assertEqual(d.subtree_com.shape, (nbody, 3))
-    self.assertEqual(d._impl.cdof.shape, (nv, 6))
+    self.assertEqual(d.cdof.shape, (nv, 6))
+    self.assertEqual(d.actuator_length.shape, (1,))
+
+    if impl == 'cpp':
+      self.assertTrue(hasattr(d._impl, 'pointer_lo'))
+      self.assertTrue(hasattr(d._impl, 'pointer_hi'))
+      return  # cpp does not populate other _impl fields
+
+    self.assertEqual(d._impl.nefc, nefc)
     self.assertEqual(d._impl.cinert.shape, (nbody, 10))
     self.assertEqual(d._impl.crb.shape, (nbody, 10))
-    self.assertEqual(d._impl.actuator_length.shape, (1,))
     if impl == 'jax':
       self.assertEqual(d._impl.actuator_moment.shape, (1, nv))
-    elif impl == 'c':
-      self.assertEqual(d._impl.actuator_moment.shape, (m.nJmom,))
+
     self.assertEqual(d._impl.contact.dist.shape, (ncon,))
     self.assertEqual(d._impl.contact.pos.shape, (ncon, 3))
     self.assertEqual(d._impl.contact.frame.shape, (ncon, 3, 3))
@@ -395,7 +442,7 @@ class DataIOTest(parameterized.TestCase):
     self.assertEqual(d._impl.efc_D.shape, (nefc,))
     self.assertEqual(d._impl.actuator_velocity.shape, (1,))
     self.assertEqual(d.cvel.shape, (nbody, 6))
-    self.assertEqual(d._impl.cdof_dot.shape, (nv, 6))
+    self.assertEqual(d.cdof_dot.shape, (nv, 6))
     self.assertEqual(d.qfrc_bias.shape, (nv,))
     self.assertEqual(d.qfrc_passive.shape, (nv,))
     self.assertEqual(d._impl.efc_aref.shape, (nefc,))
@@ -410,10 +457,7 @@ class DataIOTest(parameterized.TestCase):
       self.assertEqual(d._impl.qM.shape, (nv, nv))
       self.assertEqual(d._impl.qLD.shape, (nv, nv))
       self.assertEqual(d._impl.qLDiagInv.shape, (0,))
-    elif impl == 'c':
-      self.assertEqual(d._impl.qM.shape, (nm,))
-      self.assertEqual(d._impl.qLD.shape, (nm,))
-      self.assertEqual(d._impl.qLDiagInv.shape, (nv,))
+
 
     # test sparse
     m.opt.jacobian = mujoco.mjtJacobian.mjJAC_SPARSE
@@ -422,10 +466,7 @@ class DataIOTest(parameterized.TestCase):
     self.assertEqual(d._impl.qLD.shape, (nm,))
     self.assertEqual(d._impl.qLDiagInv.shape, (nv,))
 
-    if impl == 'c':
-      # check C specific fields
-      self.assertEqual(d._impl.light_xpos.shape, (m.nlight, 3))
-      self.assertEqual(d._impl.bvh_active.shape, (m.nbvh,))
+
 
   @mock.patch.dict(os.environ, {'MJX_GPU_DEFAULT_WARP': 'true'})
   def test_make_data_warp(self):
@@ -434,13 +475,19 @@ class DataIOTest(parameterized.TestCase):
     if not mjx_io.has_cuda_gpu_device():
       self.skipTest('No CUDA GPU device.')
     m = mujoco.MjModel.from_xml_string(_MULTIPLE_CONVEX_OBJECTS)
-    d = mjx.make_data(m, impl='warp', nconmax=9, njmax=11)
+    d = mjx.make_data(m, impl='warp', nconmax=9, njmax=23)
     self.assertEqual(d._impl.contact__dist.shape[0], 9)
-    self.assertEqual(d._impl.efc__J.shape[0], 11)
+    self.assertEqual(d._impl.efc__pos.shape[0], 23)
 
-  @parameterized.parameters('jax', 'c')
+  @parameterized.parameters('jax', 'cpp', 'warp')
   def test_put_data(self, impl: str):
     """Test that put_data puts the correct data for dense and sparse."""
+    if impl == 'warp':
+      if not mjxw.WARP_INSTALLED:
+        self.skipTest('Warp is not installed.')
+      if not mjx_io.has_cuda_gpu_device():
+        self.skipTest('No CUDA GPU device.')
+
     m = mujoco.MjModel.from_xml_string(_MULTIPLE_CONSTRAINTS)
     d = mujoco.MjData(m)
     mujoco.mj_step(m, d, 2)
@@ -450,7 +497,7 @@ class DataIOTest(parameterized.TestCase):
     np.testing.assert_allclose(dx.qpos, d.qpos)
     np.testing.assert_allclose(dx.xpos, d.xpos)
     np.testing.assert_allclose(dx.cvel, d.cvel)
-    np.testing.assert_allclose(dx._impl.cdof_dot, d.cdof_dot)
+    np.testing.assert_allclose(dx.cdof_dot, d.cdof_dot)
 
     # check that there are no weak types
     self.assertFalse(
@@ -461,15 +508,40 @@ class DataIOTest(parameterized.TestCase):
         )
     )
 
+    # xmat, ximat, geom_xmat are all shape transformed
+    np.testing.assert_allclose(dx.xmat.reshape((-1, 9)), d.xmat)
+    np.testing.assert_allclose(dx.ximat.reshape((-1, 9)), d.ximat)
+    np.testing.assert_allclose(dx.geom_xmat.reshape((-1, 9)), d.geom_xmat)
+    np.testing.assert_allclose(dx.site_xmat.reshape((-1, 9)), d.site_xmat)
+
+    # tendon length is correct
+    np.testing.assert_allclose(dx.ten_length, d.ten_length)
+
     if impl == 'jax':
       # check that qM is transformed properly
       qm = np.zeros((m.nv, m.nv), dtype=np.float64)
       mujoco.mj_fullM(m, qm, d.qM)
       np.testing.assert_allclose(qm, mjx.full_m(mjx.put_model(m), dx))
-    elif impl == 'c':
-      np.testing.assert_allclose(dx._impl.qM, d.qM)
-      np.testing.assert_allclose(dx._impl.qLD, d.qLD)
-      np.testing.assert_allclose(dx._impl.qLDiagInv, d.qLDiagInv)
+
+    elif impl == 'cpp':
+      self.assertTrue(hasattr(dx._impl, 'pointer_lo'))
+      self.assertTrue(hasattr(dx._impl, 'pointer_hi'))
+      return  # cpp does not populate other fields in _impl
+    elif impl == 'warp':
+      qm = np.zeros((m.nv, m.nv), dtype=np.float64)
+      mujoco.mj_fullM(m, qm, d.qM)
+      np.testing.assert_allclose(dx._impl.qM, qm)
+      # TODO(taylorhowell): test efc__J
+      np.testing.assert_allclose(dx._impl.efc__aref[:3], d.efc_aref[:3])
+
+    # tendon impl data is correct
+    np.testing.assert_equal(dx._impl.ten_wrapadr, np.zeros((1,)))
+    np.testing.assert_equal(dx._impl.ten_wrapnum, np.zeros((1,)))
+    np.testing.assert_equal(dx._impl.wrap_obj, np.zeros((2, 2)))
+    np.testing.assert_equal(dx._impl.wrap_xpos, np.zeros((2, 6)))
+
+    if impl == 'warp':
+      return
 
     # 4 contacts, 2 for each capsule against the plane
     self.assertEqual(dx._impl.contact.dist.shape, (4,))
@@ -481,23 +553,6 @@ class DataIOTest(parameterized.TestCase):
         dx._impl.contact.frame[0].reshape(9), d.contact.frame[0]
     )
     np.testing.assert_allclose(dx._impl.contact.frame[1:], 0)
-
-    # xmat, ximat, geom_xmat are all shape transformed
-    self.assertEqual(dx.xmat.shape, (3, 3, 3))
-    self.assertEqual(dx.ximat.shape, (3, 3, 3))
-    self.assertEqual(dx.geom_xmat.shape, (3, 3, 3))
-    self.assertEqual(dx.site_xmat.shape, (1, 3, 3))
-    np.testing.assert_allclose(dx.xmat.reshape((3, 9)), d.xmat)
-    np.testing.assert_allclose(dx.ximat.reshape((3, 9)), d.ximat)
-    np.testing.assert_allclose(dx.geom_xmat.reshape((3, 9)), d.geom_xmat)
-    np.testing.assert_allclose(dx.site_xmat.reshape((1, 9)), d.site_xmat)
-
-    # tendon data is correct
-    np.testing.assert_allclose(dx.ten_length, d.ten_length)
-    np.testing.assert_equal(dx._impl.ten_wrapadr, np.zeros((1,)))
-    np.testing.assert_equal(dx._impl.ten_wrapnum, np.zeros((1,)))
-    np.testing.assert_equal(dx._impl.wrap_obj, np.zeros((2, 2)))
-    np.testing.assert_equal(dx._impl.wrap_xpos, np.zeros((2, 6)))
 
     # efc_ are also shape transformed and padded
     self.assertEqual(dx._impl.efc_J.shape, (45, 8))  # nefc, nv
@@ -523,7 +578,9 @@ class DataIOTest(parameterized.TestCase):
     d = mujoco.MjData(m)
     mujoco.mj_step(m, d, 2)
     dx_sparse = mjx.put_data(m, d, impl=impl)
-    np.testing.assert_allclose(dx_sparse._impl.efc_J, dx._impl.efc_J, atol=1e-8)
+    np.testing.assert_allclose(
+        dx_sparse._impl.efc_J, dx._impl.efc_J, atol=1e-8
+    )
 
     # check sparse mass matrices are correct
     np.testing.assert_allclose(dx_sparse._impl.qM, d.qM, atol=1e-8)
@@ -541,11 +598,35 @@ class DataIOTest(parameterized.TestCase):
       qm = np.zeros((m.nv, m.nv))
       mujoco.mj_fullM(m, qm, d.qM)
       np.testing.assert_allclose(dx_from_dense._impl.qM, qm, atol=1e-8)
-    elif impl == 'c':
-      np.testing.assert_allclose(dx_from_dense._impl.qM, d.qM, atol=1e-8)
+
+
+  def test_put_data_warp_ndim(self):
+    """Tests that put_data produces expected dimensions for Warp fields."""
+    if not mjxw.WARP_INSTALLED:
+      self.skipTest('Warp is not installed.')
+    if not mjx_io.has_cuda_gpu_device():
+      self.skipTest('No CUDA GPU device.')
+
+    m = mujoco.MjModel.from_xml_string(_MULTIPLE_CONSTRAINTS)
+    d = mujoco.MjData(m)
+    mujoco.mj_step(m, d, 2)
+    dx = mjx.put_data(m, d, impl='warp')
+
+    def check_ndim(path, x):
+      k = _get_name_from_path(path)
+      if k not in mjxw_types._NDIM['Data']:
+        return
+      is_batched = mjxw_types._BATCH_DIM['Data'][k]
+      expected_ndim = mjxw_types._NDIM['Data'][k] - is_batched
+      if not hasattr(x, 'ndim'):
+        return
+      msg = f'Field {k} has ndim {x.ndim} but expected {expected_ndim}'
+      self.assertEqual(x.ndim, expected_ndim, msg)
+
+    _ = jax.tree.map_with_path(check_ndim, dx)
 
   @parameterized.parameters(
-      ('jax', False), ('jax', True), ('c', False), ('c', True)
+      ('jax', False), ('jax', True)
   )
   def test_get_data(self, impl: str, sparse: bool):
     """Test that get_data makes correct MjData."""
@@ -610,9 +691,6 @@ class DataIOTest(parameterized.TestCase):
     np.testing.assert_allclose(d_2.efc_aref, d.efc_aref)
     np.testing.assert_allclose(d_2.contact.efc_address, d.contact.efc_address)
 
-    if impl == 'c':
-      # check fields specific to the C implementation
-      np.testing.assert_allclose(d_2.bvh_active, d.bvh_active)
 
   def test_get_data_simplebody(self):
     """Test that get_data works with simple bodies where nC < nM."""
@@ -644,7 +722,7 @@ class DataIOTest(parameterized.TestCase):
     dx = mjx.put_data(m, d)
     mjx.get_data(m, dx)
 
-  @parameterized.parameters('jax', 'c')
+  @parameterized.parameters(('jax',))
   def test_get_data_batched(self, impl):
     """Test that get_data makes correct List[MjData] for batched Data."""
 
@@ -661,16 +739,17 @@ class DataIOTest(parameterized.TestCase):
     self.assertEqual(ds[0].ncon, 1)
     self.assertEqual(ds[1].ncon, 0)
 
-  @parameterized.parameters('jax', 'c')
+  @parameterized.parameters('jax', 'cpp')
   def test_get_data_into(self, impl):
     """Test that get_data_into correctly populates an MjData."""
 
     m = mujoco.MjModel.from_xml_string(_MULTIPLE_CONSTRAINTS)
     d = mujoco.MjData(m)
     mujoco.mj_step(m, d, 2)
-    dx = mjx.put_data(m, d, impl=impl)
+    keepalive = {} if impl == 'cpp' else None
+    dx = mjx.put_data(m, d, impl=impl, keepalive_refs=keepalive)
     d_2 = mujoco.MjData(m)
-    mjx.get_data_into(d_2, m, dx)
+    mjx.get_data_into(d_2, m, dx, keepalive_refs=keepalive)
 
     # check a few fields
     np.testing.assert_allclose(d_2.qpos, d.qpos)
@@ -684,7 +763,23 @@ class DataIOTest(parameterized.TestCase):
     self.assertEqual(d_2.contact.frame.shape, (1, 9))
     np.testing.assert_allclose(d_2.contact.frame, d.contact.frame)
 
-  @parameterized.parameters('jax', 'c')
+  def test_get_data_into_warp(self):
+    """Test get_data_into for impl='warp'."""
+
+    # TODO(taylorhowell): After put_data supports impl='warp' update test above
+    # and remove this test.
+    if not mjxw.WARP_INSTALLED:
+      self.skipTest('Warp is not installed.')
+    if not mjx_io.has_cuda_gpu_device():
+      self.skipTest('No CUDA GPU device.')
+
+    m = mujoco.MjModel.from_xml_string('<mujoco></mujoco>')
+    d = mujoco.MjData(m)
+    mx = mjx.put_model(m, impl='warp')
+    dx = mjx.make_data(m, impl='warp')
+    mjx.get_data_into(d, mx, dx)
+
+  @parameterized.parameters(('jax',))
   def test_get_data_into_wrong_shape(self, impl):
     """Tests that get_data_into throwsif input and output shapes don't match."""
 
@@ -697,7 +792,7 @@ class DataIOTest(parameterized.TestCase):
     with self.assertRaisesRegex(ValueError, r'Input field.*has shape.*'):
       mjx.get_data_into(d_2, m, dx)
 
-  @parameterized.parameters('jax', 'c')
+  @parameterized.parameters(('jax',))
   def test_make_matches_put(self, impl):
     """Test that make_data produces a pytree that matches put_data."""
     m = mujoco.MjModel.from_xml_string(_MULTIPLE_CONSTRAINTS)
@@ -771,7 +866,7 @@ class DataIOTest(parameterized.TestCase):
 
     _ = jax.tree.map_with_path(check_ndim, dx)
 
-  @parameterized.parameters('jax', 'warp')
+  @parameterized.parameters('jax', 'warp', 'cpp')
   def test_data_slice(self, impl):
     """Tests that slice on Data works as expected."""
     if impl == 'warp' and not mjxw.WARP_INSTALLED:
@@ -788,6 +883,38 @@ class DataIOTest(parameterized.TestCase):
     if impl == 'warp':
       self.assertEqual(dx._impl.contact__dist.shape, (dx._impl.naconmax,))
       self.assertEqual(dx[0]._impl.contact__dist.shape, (dx._impl.naconmax,))
+
+  def test_put_data_cpp(self):
+    m = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body name="body1" pos="0 0 1">
+            <joint type="free"/>
+            <geom type="sphere" size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    d = mujoco.MjData(m)
+    d.qpos[0] = 1.0
+    unused_mjx_data = mjx_io.put_data(m, d, impl='cpp')
+
+    def put_data(dummy_arg_for_batching):
+      dx = mjx_io.put_data(
+          m, d, impl='cpp', dummy_arg_for_batching=dummy_arg_for_batching
+      )
+      return dx
+
+    vmjx_data = jax.vmap(put_data, in_axes=0, out_axes=0)(
+        jp.zeros(2, dtype=jp.uint32)
+    )
+
+    self.assertEqual(vmjx_data.qpos.shape, (2, m.nq))
+    lo = vmjx_data._impl.pointer_lo
+    hi = vmjx_data._impl.pointer_hi
+    addr0 = int(lo[0]) | (int(hi[0]) << 32)
+    addr1 = int(lo[1]) | (int(hi[1]) << 32)
+    self.assertNotEqual(addr0, addr1)
 
 
 # Test cases for `_resolve_impl_and_device` where the device is
@@ -811,11 +938,11 @@ _DEVICE_TEST_CASES = [
     ('gpu-notnvidia', 'warp', ('cpu', 'error')),
     ('gpu-nvidia', 'warp', ('gpu', Impl.WARP)),
     ('tpu', 'warp', ('tpu', 'error')),
-    # C backend specified.
-    ('cpu', 'c', ('cpu', Impl.C)),
-    ('gpu-notnvidia', 'c', ('cpu', 'error')),
-    ('gpu-nvidia', 'c', ('cpu', 'error')),
-    ('tpu', 'c', ('tpu', 'error')),
+    # CPP backend specified.
+    ('cpu', 'cpp', ('cpu', Impl.CPP)),
+    ('gpu-notnvidia', 'cpp', ('cpu', 'error')),
+    ('gpu-nvidia', 'cpp', ('cpu', 'error')),
+    ('tpu', 'cpp', ('tpu', 'error')),
 ]
 
 # Test cases for `_resolve_impl_and_device` where the user does NOT
@@ -839,11 +966,11 @@ _DEFAULT_DEVICE_TEST_CASES = [
     ('gpu-notnvidia', 'warp', ('cpu', 'error')),
     ('gpu-nvidia', 'warp', ('gpu', Impl.WARP)),
     ('tpu', 'warp', ('tpu', 'error')),
-    # C backend impl specified, CPU should always be available.
-    ('cpu', 'c', ('cpu', Impl.C)),
-    ('gpu-notnvidia', 'c', ('cpu', Impl.C)),
-    ('gpu-nvidia', 'c', ('cpu', Impl.C)),
-    ('tpu', 'c', ('cpu', Impl.C)),
+    # CPP backend impl specified, CPU should always be available.
+    ('cpu', 'cpp', ('cpu', Impl.CPP)),
+    ('gpu-notnvidia', 'cpp', ('cpu', Impl.CPP)),
+    ('gpu-nvidia', 'cpp', ('cpu', Impl.CPP)),
+    ('tpu', 'cpp', ('cpu', Impl.CPP)),
 ]
 
 
@@ -1069,6 +1196,140 @@ class ResolveImplAndDeviceTest(parameterized.TestCase):
     )
     self.assertEqual(impl, Impl.JAX)
     self.assertEqual(device.platform, 'gpu')
+
+
+class StateIOTest(parameterized.TestCase):
+
+  @parameterized.parameters(
+      mujoco.mjtState.mjSTATE_TIME,
+      mujoco.mjtState.mjSTATE_QPOS,
+      mujoco.mjtState.mjSTATE_QVEL,
+      mujoco.mjtState.mjSTATE_ACT,
+      mujoco.mjtState.mjSTATE_WARMSTART,
+      mujoco.mjtState.mjSTATE_CTRL,
+      mujoco.mjtState.mjSTATE_QFRC_APPLIED,
+      mujoco.mjtState.mjSTATE_XFRC_APPLIED,
+      mujoco.mjtState.mjSTATE_EQ_ACTIVE,
+      mujoco.mjtState.mjSTATE_INTEGRATION,
+  )
+  def test_state_size(self, spec):
+    m = mujoco.MjModel.from_xml_string(_MULTIPLE_CONSTRAINTS)
+    mx = mjx.put_model(m)
+    self.assertEqual(mjx.state_size(mx, spec), mujoco.mj_stateSize(m, spec))
+
+  def test_put_data_cpp(self):
+    m = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <body name="body1" pos="0 0 1">
+            <joint type="free"/>
+            <geom type="sphere" size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    d = mujoco.MjData(m)
+    d.qpos[0] = 1.0
+    unused_mjx_data = mjx_io.put_data(m, d, impl='cpp')
+
+    def put_data(dummy_arg_for_batching):
+      dx = mjx_io.put_data(
+          m, d, impl='cpp', dummy_arg_for_batching=dummy_arg_for_batching
+      )
+      return dx
+
+    vmjx_data = jax.vmap(put_data, in_axes=0, out_axes=0)(
+        jp.zeros(2, dtype=jp.uint32)
+    )
+
+    self.assertEqual(vmjx_data.qpos.shape, (2, m.nq))
+    lo = vmjx_data._impl.pointer_lo
+    hi = vmjx_data._impl.pointer_hi
+    addr0 = int(lo[0]) | (int(hi[0]) << 32)
+    addr1 = int(lo[1]) | (int(hi[1]) << 32)
+    self.assertNotEqual(addr0, addr1)
+
+  def test_get_set_state(self):
+    m = mujoco.MjModel.from_xml_string(_MULTIPLE_CONSTRAINTS)
+    d = mujoco.MjData(m)
+    # give the model a little kick to get some non-zero state
+    d.qvel = np.random.random(m.nv)
+    mujoco.mj_step(m, d)
+    mx = mjx.put_model(m)
+    dx = mjx.put_data(m, d)
+
+    # test full state
+    spec_full = mujoco.mjtState.mjSTATE_INTEGRATION
+    state = mjx.get_state(mx, dx, spec_full)
+    state_mj = np.empty(state.shape, dtype=np.float64)
+    mujoco.mj_getState(m, d, state_mj, int(spec_full))
+    np.testing.assert_allclose(state, state_mj, atol=1e-6)
+    dx2 = mjx.set_state(mx, mjx.make_data(m), state, spec_full)
+    np.testing.assert_allclose(dx.qpos, dx2.qpos)
+    np.testing.assert_allclose(dx.qvel, dx2.qvel)
+    np.testing.assert_allclose(dx.act, dx2.act)
+    np.testing.assert_allclose(dx.qacc_warmstart, dx2.qacc_warmstart)
+    np.testing.assert_allclose(dx.ctrl, dx2.ctrl)
+    np.testing.assert_allclose(dx.qfrc_applied, dx2.qfrc_applied)
+    np.testing.assert_allclose(dx.xfrc_applied, dx2.xfrc_applied)
+    np.testing.assert_allclose(dx.eq_active, dx2.eq_active)
+
+    # test single state
+    for spec in [
+        mujoco.mjtState.mjSTATE_TIME,
+        mujoco.mjtState.mjSTATE_QPOS,
+        mujoco.mjtState.mjSTATE_QVEL,
+        mujoco.mjtState.mjSTATE_ACT,
+        mujoco.mjtState.mjSTATE_WARMSTART,
+        mujoco.mjtState.mjSTATE_CTRL,
+        mujoco.mjtState.mjSTATE_QFRC_APPLIED,
+        mujoco.mjtState.mjSTATE_XFRC_APPLIED,
+        mujoco.mjtState.mjSTATE_EQ_ACTIVE,
+    ]:
+      state = mjx.get_state(mx, dx, spec)
+      state_mj = np.empty(state.shape, dtype=np.float64)
+      mujoco.mj_getState(m, d, state_mj, int(spec))
+      np.testing.assert_allclose(state, state_mj)
+      dx2 = mjx.set_state(mx, mjx.make_data(m), state, spec)
+      np.testing.assert_allclose(
+          getattr(dx, mjx_io._STATE_MAP[spec]),
+          getattr(dx2, mjx_io._STATE_MAP[spec]),
+      )
+
+    # test partial state
+    spec = (
+        mujoco.mjtState.mjSTATE_QPOS
+        | mujoco.mjtState.mjSTATE_QVEL
+    )
+    state = mjx.get_state(mx, dx, spec)
+    state_mj = np.empty(state.shape, dtype=np.float64)
+    mujoco.mj_getState(m, d, state_mj, int(spec))
+    np.testing.assert_allclose(state, state_mj)
+
+    # check that we only set qpos/qvel and other values are at init
+    dx_init = mjx.make_data(m)
+    dx2 = mjx.set_state(mx, dx_init, state, spec)
+    np.testing.assert_allclose(dx.qpos, dx2.qpos)
+    np.testing.assert_allclose(dx.qvel, dx2.qvel)
+    np.testing.assert_allclose(dx_init.time, dx2.time)
+    np.testing.assert_allclose(dx_init.act, dx2.act)
+
+  def test_jit(self):
+    m = mujoco.MjModel.from_xml_string(_MULTIPLE_CONSTRAINTS)
+    d = mujoco.MjData(m)
+    mx = mjx.put_model(m)
+    dx = mjx.put_data(m, d)
+    spec = mujoco.mjtState.mjSTATE_INTEGRATION
+
+    get_state_jit = jax.jit(mjx.get_state, static_argnames='spec')
+    state = get_state_jit(mx, dx, spec)
+    state_nojit = mjx.get_state(mx, dx, spec)
+    np.testing.assert_allclose(state, state_nojit)
+
+    set_state_jit = jax.jit(mjx.set_state, static_argnames='spec')
+    dx2 = set_state_jit(mx, dx, state, spec)
+    dx2_nojit = mjx.set_state(mx, dx, state, spec)
+    np.testing.assert_allclose(dx2.qpos, dx2_nojit.qpos)
 
 
 if __name__ == '__main__':

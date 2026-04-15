@@ -44,3 +44,8 @@ bin-int/
 *.vcxproj*
 Makefile
 *.make
+
+# JavaScript bindings build
+wasm/**/dist/
+**/node_modules/
+

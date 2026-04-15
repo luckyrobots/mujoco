@@ -14,6 +14,7 @@
 
 #include "engine/engine_print.h"
 
+#include <inttypes.h>  // IWYU pragma: keep
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -23,6 +24,7 @@
 #include <mujoco/mjmacro.h>
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjsan.h>  // IWYU pragma: keep
+#include <mujoco/mjtnum.h>
 #include <mujoco/mjxmacro.h>
 #include "engine/engine_core_constraint.h"
 #include "engine/engine_core_util.h"
@@ -41,7 +43,7 @@
 #define FLOAT_FORMAT "% -9.2g"
 #define FLOAT_FORMAT_MAX_LEN 20
 #define INT_FORMAT " %d"
-#define SIZE_T_FORMAT " %zu"
+#define SIZE_FORMAT " %" PRId64
 #define NAME_FORMAT "%-21s"
 
 
@@ -80,7 +82,7 @@ static void printArr(FILE* fp, const char* name, const float* data, int n, const
 
 // print 2D array of mjtNum into file
 static void printArray2d(const char* str, int nr, int nc, const mjtNum* data, FILE* fp,
-                       const char* float_format) {
+                         const char* float_format) {
   if (!data) {
     return;
   }
@@ -115,6 +117,51 @@ static void printArray2dInt(const char* str, int nr, int nc, const int* data, FI
       fprintf(fp, "\n");
     }
     fprintf(fp, "\n");
+  }
+}
+
+
+// print history buffer with semantic labels
+static void printDelayBuffer(const char* name, const mjtNum* buf, int nhistory, int dim,
+                             FILE* fp, const char* float_format) {
+  if (!buf || nhistory <= 0) {
+    return;
+  }
+  fprintf(fp, "  %s:\n", name);
+
+  // user value (first slot)
+  fprintf(fp, "    phase  = ");
+  fprintf(fp, float_format, buf[0]);
+  fprintf(fp, "\n");
+
+  // cursor (second slot, stored as mjtNum but is an integer)
+  fprintf(fp, "    cursor =  %d\n", (int)buf[1]);
+
+  // timestamps
+  const mjtNum* times = buf + 2;
+  fprintf(fp, "    times  = ");
+  for (int i = 0; i < nhistory; i++) {
+    fprintf(fp, float_format, times[i]);
+  }
+  fprintf(fp, "\n");
+
+  // values
+  const mjtNum* values = times + nhistory;
+  if (dim == 1) {
+    fprintf(fp, "    values = ");
+    for (int i = 0; i < nhistory; i++) {
+      fprintf(fp, float_format, values[i]);
+    }
+    fprintf(fp, "\n");
+  } else {
+    fprintf(fp, "    values:\n");
+    for (int i = 0; i < nhistory; i++) {
+      fprintf(fp, "      [%d] =", i);
+      for (int j = 0; j < dim; j++) {
+        fprintf(fp, float_format, values[i*dim + j]);
+      }
+      fprintf(fp, "\n");
+    }
   }
 }
 
@@ -344,17 +391,13 @@ static void printVector(const char* str, const mjtNum* data, int n, FILE* fp,
 
 // print human readable memory size
 static const char* memorySize(size_t nbytes) {
-  static mjTHREADLOCAL char message[20];
+  static mjTHREADLOCAL char message[32];
   int k = 1024;
 
   if (nbytes < k) {
     snprintf(message, sizeof(message), "%5zu bytes", nbytes);
-  } else if (nbytes < k*k) {
-    snprintf(message, sizeof(message), "%5.1f KB", (double)nbytes / k);
-  } else if (nbytes < k*k*k) {
-    snprintf(message, sizeof(message), "%5.1f MB", (double)nbytes / (k*k));
   } else {
-    snprintf(message, sizeof(message), "%5.1f GB", (double)nbytes / (k*k*k));
+    snprintf(message, sizeof(message), "%7.0f KB", (double)nbytes / (k));
   }
 
   return message;
@@ -364,13 +407,20 @@ static const char* memorySize(size_t nbytes) {
 // return memory footprint of all significant mesh-related arrays
 static size_t sizeMesh(const mjModel* m) {
   size_t nbytes = 0;
-  nbytes += sizeof(float) * 3*m->nmeshvert;        // mesh_vert
-  nbytes += sizeof(float) * 3*m->nmeshnormal;      // mesh_normal
-  nbytes += sizeof(float) * 2*m->nmeshtexcoord;    // mesh_texcoord
-  nbytes += sizeof(int)   * 3*m->nmeshface;        // mesh_face
-  nbytes += sizeof(int)   * 3*m->nmeshface;        // mesh_facenormal
-  nbytes += sizeof(int)   * 3*m->nmeshface;        // mesh_facetexcoord
-  nbytes += sizeof(int)   * m->nmeshgraph;         // mesh_graph
+  nbytes += sizeof(float)  * 3*m->nmeshvert;      // mesh_vert
+  nbytes += sizeof(float)  * 3*m->nmeshnormal;    // mesh_normal
+  nbytes += sizeof(float)  * 2*m->nmeshtexcoord;  // mesh_texcoord
+  nbytes += sizeof(int)    * 3*m->nmeshface;      // mesh_face
+  nbytes += sizeof(int)    * 3*m->nmeshface;      // mesh_facenormal
+  nbytes += sizeof(int)    * 3*m->nmeshface;      // mesh_facetexcoord
+  nbytes += sizeof(int)    * m->nmeshgraph;       // mesh_graph
+  nbytes += sizeof(mjtNum) * 3*m->nmeshpoly;      // mesh_polynormal
+  nbytes += sizeof(int)    * m->nmeshpoly;        // mesh_polyvertadr
+  nbytes += sizeof(int)    * m->nmeshpoly;        // mesh_polyvertnum
+  nbytes += sizeof(int)    * m->nmeshpolyvert;    // mesh_polyvert
+  nbytes += sizeof(int)    * m->nmeshvert;        // mesh_polymapadr
+  nbytes += sizeof(int)    * m->nmeshvert;        // mesh_polymapnum
+  nbytes += sizeof(int)    * m->nmeshpolymap;     // mesh_polymap
   return nbytes;
 }
 
@@ -388,6 +438,21 @@ static size_t sizeSkin(const mjModel* m) {
   nbytes += sizeof(int)   * m->nskinbone;          // skin_bonebodyid
   nbytes += sizeof(int)   * m->nskinbonevert;      // skin_bonevertid
   nbytes += sizeof(float) * m->nskinbonevert;      // skin_bonevertweight
+  return nbytes;
+}
+
+
+// return memory footprint of all BVH-related arrays
+static size_t sizeBVH(const mjModel* m) {
+  size_t nbytes = 0;
+  nbytes += sizeof(int)    * m->nbvh;               // bvh_depth
+  nbytes += sizeof(int)    * 2*m->nbvh;             // bvh_child
+  nbytes += sizeof(int)    * m->nbvh;               // bvh_nodeid
+  nbytes += sizeof(mjtNum) * 6*m->nbvhstatic;       // bvh_aabb
+  nbytes += sizeof(int)    * m->noct;               // oct_depth
+  nbytes += sizeof(int)    * 8*m->noct;             // oct_child
+  nbytes += sizeof(mjtNum) * 6*m->noct;             // oct_aabb
+  nbytes += sizeof(mjtNum) * 8*m->noct;             // oct_coeff
   return nbytes;
 }
 
@@ -504,16 +569,18 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
 
   // memory footprint
   fprintf(fp, "MEMORY\n");
-  fprintf(fp, "  total         %s\n", memorySize(mj_sizeModel(m)));
-  if (m->nmesh) {
-    fprintf(fp, "  meshes        %s\n", memorySize(sizeMesh(m)));
-  }
-  if (m->ntex) {
-    fprintf(fp, "  textures      %s\n", memorySize(m->ntexdata));
-  }
-  if (m->nskin) {
-    fprintf(fp, "  skins         %s\n", memorySize(sizeSkin(m)));
-  }
+  size_t sz_total = mj_sizeModel(m);
+  size_t sz_mesh = m->nmesh ? sizeMesh(m) : 0;
+  size_t sz_bvh = (m->nbvh || m->noct) ? sizeBVH(m) : 0;
+  size_t sz_tex = m->ntex ? m->ntexdata : 0;
+  size_t sz_skin = m->nskin ? sizeSkin(m) : 0;
+  size_t sz_other = sz_total - sz_mesh - sz_bvh - sz_tex - sz_skin;
+  fprintf(fp, "  total       %s\n", memorySize(sz_total));
+  if (sz_mesh)  fprintf(fp, "  meshes      %s\n", memorySize(sz_mesh));
+  if (sz_bvh)   fprintf(fp, "  bvhs        %s\n", memorySize(sz_bvh));
+  if (sz_tex)   fprintf(fp, "  textures    %s\n", memorySize(sz_tex));
+  if (sz_skin)  fprintf(fp, "  skins       %s\n", memorySize(sz_skin));
+  if (sz_other) fprintf(fp, "  other       %s\n", memorySize(sz_other));
   fprintf(fp, "\n");
 
 
@@ -523,44 +590,122 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
   if (m->name) {                                  \
     const char* format = _Generic(                \
         m->name,                                  \
-        size_t : SIZE_T_FORMAT,                   \
+        mjtSize : SIZE_FORMAT,                    \
         default : INT_FORMAT);                    \
     fprintf(fp, NAME_FORMAT, "  " #name);         \
     fprintf(fp, format, m->name);                 \
     fprintf(fp, "\n");                            \
   }
 
-  MJMODEL_INTS
+  MJMODEL_SIZES
 #undef X
   fprintf(fp, "\n");
 
-  // scalar options
+  // options
   fprintf(fp, "OPTION\n");
-#define X( type, name )                           \
-  fprintf(fp, NAME_FORMAT, "  " #name);           \
-  fprintf(fp, float_format, m->opt.name);         \
+#define X(type, name, sz)                                             \
+  fprintf(fp, NAME_FORMAT, "  " #name);                               \
+  {                                                                   \
+    const char* format =                                              \
+        _Generic(m->opt.name, mjtNum: float_format, int: INT_FORMAT); \
+    fprintf(fp, format, m->opt.name);                                 \
+  }                                                                   \
+  fprintf(fp, "\n");
+#define XVEC(type, name, sz)                                             \
+  fprintf(fp, NAME_FORMAT, "  " #name);                                  \
+  {                                                                      \
+    const char* format =                                                 \
+        _Generic(m->opt.name[0], mjtNum: float_format, int: INT_FORMAT); \
+    for (int i = 0; i < sz; i++) {                                       \
+      fprintf(fp, format, m->opt.name[i]);                               \
+    }                                                                    \
+  }                                                                      \
   fprintf(fp, "\n");
 
-  MJOPTION_FLOATS
+  MJOPTION_FIELDS
+#undef XVEC
 #undef X
-
-#define X( type, name )                           \
-  fprintf(fp, NAME_FORMAT, "  " #name);           \
-  fprintf(fp, INT_FORMAT "\n", m->opt.name);
-
-  MJOPTION_INTS
-#undef X
-
-  // vector options
-#define X( name, sz )                             \
-  fprintf(fp, NAME_FORMAT, "  " #name);           \
-  for (int i=0; i < sz; i++) {                    \
-    fprintf(fp, float_format, m->opt.name[i]);    \
-    fprintf(fp, " ");                             \
-  }                                               \
   fprintf(fp, "\n");
 
-  MJOPTION_VECTORS
+  // visual
+  fprintf(fp, "VISUAL\n");
+
+  fprintf(fp, "  GLOBAL\n");
+#define X(type, name)                                                       \
+  fprintf(fp, NAME_FORMAT, "    " #name);                                   \
+  {                                                                         \
+    const char* format =                                                    \
+        _Generic(m->vis.global.name, float: float_format, int: INT_FORMAT); \
+    fprintf(fp, format, m->vis.global.name);                                \
+  }                                                                         \
+  fprintf(fp, "\n");
+
+  MJVISUAL_GLOBAL_FIELDS
+#undef X
+
+  fprintf(fp, "  QUALITY\n");
+#define X(name)                                  \
+  fprintf(fp, NAME_FORMAT, "    " #name);        \
+  fprintf(fp, INT_FORMAT, m->vis.quality.name);  \
+  fprintf(fp, "\n");
+
+  MJVISUAL_QUALITY_FIELDS
+#undef X
+
+  fprintf(fp, "  HEADLIGHT\n");
+#define X(type, name, sz)                                                      \
+  fprintf(fp, NAME_FORMAT, "    " #name);                                      \
+  {                                                                            \
+    const char* format =                                                       \
+        _Generic(m->vis.headlight.name, float: float_format, int: INT_FORMAT); \
+    fprintf(fp, format, m->vis.headlight.name);                                \
+  }                                                                            \
+  fprintf(fp, "\n");
+#define XVEC(type, name, sz)                                \
+  fprintf(fp, NAME_FORMAT, "    " #name);                   \
+  {                                                         \
+    const char* format = _Generic(                          \
+        m->vis.headlight.name[0],                           \
+        float: float_format,                                \
+        int: INT_FORMAT);                                   \
+    for (int i = 0; i < sz; i++) {                          \
+      fprintf(fp, format, m->vis.headlight.name[i]);        \
+    }                                                       \
+  }                                                         \
+  fprintf(fp, "\n");
+  MJVISUAL_HEADLIGHT_FIELDS
+#undef XVEC
+#undef X
+
+  fprintf(fp, "  MAP\n");
+#define X(name)                                \
+  fprintf(fp, NAME_FORMAT, "    " #name);      \
+  fprintf(fp, float_format, m->vis.map.name);  \
+  fprintf(fp, "\n");
+
+  MJVISUAL_MAP_FIELDS
+#undef X
+
+  fprintf(fp, "  SCALE\n");
+#define X(name)                                  \
+  fprintf(fp, NAME_FORMAT, "    " #name);        \
+  fprintf(fp, float_format, m->vis.scale.name);  \
+  fprintf(fp, "\n");
+
+  MJVISUAL_SCALE_FIELDS
+#undef X
+
+  fprintf(fp, "  RGBA\n");
+#define X(name)                                       \
+  fprintf(fp, NAME_FORMAT, "    " #name);             \
+  {                                                   \
+    for (int i = 0; i < 4; i++) {                     \
+      fprintf(fp, float_format, m->vis.rgba.name[i]); \
+    }                                                 \
+  }                                                   \
+  fprintf(fp, "\n");
+
+  MJVISUAL_RGBA_FIELDS
 #undef X
   fprintf(fp, "\n");
 
@@ -571,23 +716,20 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
 
   // statistics
   fprintf(fp, "STATISTIC\n");
-  fprintf(fp, NAME_FORMAT, "  meaninertia");
-  fprintf(fp, float_format, m->stat.meaninertia);
+#define X(name, sz)                                             \
+  fprintf(fp, NAME_FORMAT, "  " #name);                         \
+  {                                                             \
+    for (int i = 0; i < sz; i++) {                              \
+      fprintf(fp, float_format, ((mjtNum*)(&m->stat.name))[i]); \
+    }                                                           \
+  }                                                             \
   fprintf(fp, "\n");
-  fprintf(fp, NAME_FORMAT, "  meanmass");
-  fprintf(fp, float_format, m->stat.meanmass);
+#define XVEC X
+
+  MJSTATISTIC_FIELDS
+#undef XVEC
+#undef X
   fprintf(fp, "\n");
-  fprintf(fp, NAME_FORMAT, "  meansize");
-  fprintf(fp, float_format, m->stat.meansize);
-  fprintf(fp, "\n");
-  fprintf(fp, NAME_FORMAT, "  extent");
-  fprintf(fp, float_format, m->stat.extent);
-  fprintf(fp, "\n");
-  fprintf(fp, NAME_FORMAT, "  center");
-  fprintf(fp, float_format, m->stat.center[0]);
-  fprintf(fp, float_format, m->stat.center[1]);
-  fprintf(fp, float_format, m->stat.center[2]);
-  fprintf(fp, "\n\n");
 
   // qpos0
   fprintf(fp, NAME_FORMAT, "qpos0");
@@ -615,7 +757,7 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
   (void)nu;
   (void)nmocap;
 
-  const int* object_class;
+  const mjtSize* object_class;
 
 #define X(type, name, num, sz)                                              \
   if (&m->num == object_class && sz > 0) {                                  \
@@ -624,6 +766,7 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
                                   float:   float_format,                    \
                                   int:     INT_FORMAT,                      \
                                   mjtByte: INT_FORMAT,                      \
+                                  mjtSize: SIZE_FORMAT,                     \
                                   default: NULL);                           \
     if (format) {                                                           \
       fprintf(fp, "  ");                                                    \
@@ -664,6 +807,14 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
     MJMODEL_POINTERS_DOF
   }
   if (m->nv) fprintf(fp, "\n");
+
+  // trees
+  object_class = &m->ntree;
+  for (int i=0; i < m->ntree; i++) {
+    fprintf(fp, "\nTREE %d:\n", i);
+    MJMODEL_POINTERS_TREE
+  }
+  if (m->ntree) fprintf(fp, "\n");
 
   // geoms
   object_class = &m->ngeom;
@@ -1101,11 +1252,11 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
 #endif
 
   fprintf(fp, "MEMORY\n");
-  fprintf(fp, "  total           %s\n",   memorySize(sizeof(mjData) + d->nbuffer + d->narena));
-  fprintf(fp, "  struct          %s\n",   memorySize(sizeof(mjData)));
-  fprintf(fp, "  buffer          %s\n",   memorySize(d->nbuffer));
+  fprintf(fp, "  total         %s\n",   memorySize(sizeof(mjData) + d->nbuffer + d->narena));
+  fprintf(fp, "  struct        %s\n",   memorySize(sizeof(mjData)));
+  fprintf(fp, "  buffer        %s\n",   memorySize(d->nbuffer));
   double arena_percent = 100 * d->maxuse_arena/(double)(d->narena);
-  fprintf(fp, "  arena           %s, used %.1f%%\n\n", memorySize(d->narena), arena_percent);
+  fprintf(fp, "  arena         %s, used %.1f%%\n\n", memorySize(d->narena), arena_percent);
 
   // ---------------------------------- print mjData fields
 
@@ -1118,7 +1269,8 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
     const char* format = _Generic(                                            \
         d->name,                                                              \
         int : INT_FORMAT,                                                     \
-        size_t : SIZE_T_FORMAT,                                               \
+        mjtSize : SIZE_FORMAT,                                                \
+        mjtByte : INT_FORMAT,                                                 \
         default : NULL);                                                      \
     if (format) {                                                             \
       fprintf(fp, "  ");                                                      \
@@ -1210,6 +1362,36 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
   printArray2d("QPOS", m->nq, 1, d->qpos, fp, float_format);
   printArray2d("QVEL", m->nv, 1, d->qvel, fp, float_format);
   printArray2d("ACT", m->na, 1, d->act, fp, float_format);
+
+  // print history buffers with semantic structure
+  if (m->nhistory) {
+    fprintf(fp, "DELAY\n");
+
+    // actuator history buffers
+    for (int i = 0; i < m->nu; i++) {
+      int adr = m->actuator_historyadr[i];
+      if (adr >= 0) {
+        char name[100];
+        const char* actuator_name = mj_id2name(m, mjOBJ_ACTUATOR, i);
+        snprintf(name, sizeof(name), "actuator %d '%s'", i, actuator_name ? actuator_name : "");
+        printDelayBuffer(name, d->history + adr, m->actuator_history[2*i], 1, fp, float_format);
+      }
+    }
+
+    // sensor history buffers
+    for (int i = 0; i < m->nsensor; i++) {
+      int adr = m->sensor_historyadr[i];
+      if (adr >= 0) {
+        char name[100];
+        const char* sensor_name = mj_id2name(m, mjOBJ_SENSOR, i);
+        snprintf(name, sizeof(name), "sensor %d  '%s'", i, sensor_name ? sensor_name : "");
+        printDelayBuffer(name, d->history + adr, m->sensor_history[2*i], m->sensor_dim[i],
+                         fp, float_format);
+      }
+    }
+
+    fprintf(fp, "\n");
+  }
   printArray2d("QACC_WARMSTART", m->nv, 1, d->qacc_warmstart, fp, float_format);
   printArray2d("CTRL", m->nu, 1, d->ctrl, fp, float_format);
   printArray2d("QFRC_APPLIED", m->nv, 1, d->qfrc_applied, fp, float_format);
@@ -1227,6 +1409,7 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
   printArray2d("ACT_DOT", m->na, 1, d->act_dot, fp, float_format);
   printArray2d("USERDATA", m->nuserdata, 1, d->userdata, fp, float_format);
   printArray2d("SENSOR", m->nsensordata, 1, d->sensordata, fp, float_format);
+  printArray2dInt("TREE_ASLEEP", m->ntree, 1, d->tree_asleep, fp);
 
   printArray2d("XPOS", m->nbody, 3, d->xpos, fp, float_format);
   printArray2d("XQUAT", m->nbody, 4, d->xquat, fp, float_format);
@@ -1250,30 +1433,20 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
 
   printArray2d("FLEXVERT_XPOS", m->nflexvert, 3, d->flexvert_xpos, fp, float_format);
   printArray2d("FLEXELEM_AABB", m->nflexelem, 6, d->flexelem_aabb, fp, float_format);
-  if (!mj_isSparse(m)) {
-    printArray2d("FLEXEDGE_J", m->nflexedge, m->nv, d->flexedge_J, fp, float_format);
-  } else {
-    mj_printSparsity("FLEXEDGE_J: flex edge connectivity", m->nflexedge, m->nv,
-                     d->flexedge_J_rowadr, NULL, d->flexedge_J_rownnz, NULL, d->flexedge_J_colind,
-                     fp);
-    printArray2dInt("FLEXEDGE_J_ROWNNZ", m->nflexedge, 1, d->flexedge_J_rownnz, fp);
-    printArray2dInt("FLEXEDGE_J_ROWADR", m->nflexedge, 1, d->flexedge_J_rowadr, fp);
-    printSparse("FLEXEDGE_J", d->flexedge_J, m->nflexedge, d->flexedge_J_rownnz,
-                              d->flexedge_J_rowadr, d->flexedge_J_colind, fp, float_format);
-  }
+  mj_printSparsity("FLEXEDGE_J: flex edge connectivity", m->nflexedge, m->nv,
+                    m->flexedge_J_rowadr, NULL, m->flexedge_J_rownnz, NULL, m->flexedge_J_colind,
+                    fp);
+  printSparse("FLEXEDGE_J", d->flexedge_J, m->nflexedge, m->flexedge_J_rownnz,
+                            m->flexedge_J_rowadr, m->flexedge_J_colind, fp, float_format);
   printArray2d("FLEXEDGE_LENGTH", m->nflexedge, 1, d->flexedge_length, fp, float_format);
 
   printArray2d("TEN_LENGTH", m->ntendon, 1, d->ten_length, fp, float_format);
-  if (!mj_isSparse(m)) {
-    printArray2d("TEN_MOMENT", m->ntendon, m->nv, d->ten_J, fp, float_format);
-  } else {
-    mj_printSparsity("TEN_J: tendon moments", m->ntendon, m->nv, d->ten_J_rowadr, NULL,
-                     d->ten_J_rownnz, NULL, d->ten_J_colind, fp);
-    printArray2dInt("TEN_J_ROWNNZ", m->ntendon, 1, d->ten_J_rownnz, fp);
-    printArray2dInt("TEN_J_ROWADR", m->ntendon, 1, d->ten_J_rowadr, fp);
-    printSparse("TEN_J", d->ten_J, m->ntendon, d->ten_J_rownnz,
-                d->ten_J_rowadr, d->ten_J_colind, fp, float_format);
-  }
+  mj_printSparsity("TEN_J: tendon moments", m->ntendon, m->nv, m->ten_J_rowadr, NULL,
+                   m->ten_J_rownnz, NULL, m->ten_J_colind, fp);
+  printArray2dInt("TEN_J_ROWNNZ", m->ntendon, 1, m->ten_J_rownnz, fp);
+  printArray2dInt("TEN_J_ROWADR", m->ntendon, 1, m->ten_J_rowadr, fp);
+  printSparse("TEN_J", d->ten_J, m->ntendon, m->ten_J_rownnz,
+              m->ten_J_rowadr, m->ten_J_colind, fp, float_format);
   for (int i=0; i < m->ntendon; i++) {
     fprintf(fp, "TENDON %d: %d wrap points\n", i, d->ten_wrapnum[i]);
     for (int j=0; j < d->ten_wrapnum[i]; j++) {
@@ -1312,6 +1485,13 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
     printArray2d("QHDIAGINV", m->nv, 1, d->qHDiagInv, fp, float_format);
   }
 
+  // computed sleep state
+  printArray2dInt("TREE_AWAKE", 1, m->ntree, d->tree_awake, fp);
+  printArray2dInt("BODY_AWAKE", 1, m->nbody, d->body_awake, fp);
+  printArray2dInt("BODY_AWAKE_IND", 1, d->nbody_awake, d->body_awake_ind, fp);
+  printArray2dInt("PARENT_AWAKE_IND", 1, d->nparent_awake, d->parent_awake_ind, fp);
+  printArray2dInt("DOF_AWAKE_IND", 1, d->nv_awake, d->dof_awake_ind, fp);
+
   // print qDeriv
   if (!mju_isZero(d->qDeriv, m->nD)) {
     printSparse("QDERIV", d->qDeriv, m->nv, m->D_rownnz, m->D_rowadr, m->D_colind,
@@ -1324,7 +1504,7 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
   }
 
   // contact
-  fprintf(fp, "CONTACT\n");
+  if (d->ncon) fprintf(fp, "CONTACT\n");
   for (int i=0; i < d->ncon; i++) {
     fprintf(fp, "  %d:\n     dim           %d\n", i, d->contact[i].dim);
     int g1 = d->contact[i].geom[0];
@@ -1454,6 +1634,11 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
   printArray2d("CFRC_EXT", m->nbody, 6, d->cfrc_ext, fp, float_format);
 
   if (d->nisland) {
+    printArray2dInt("TREE_ISLAND", 1, m->ntree, d->tree_island, fp);
+    printArray2dInt("ISLAND_NTREE", 1, d->nisland, d->island_ntree, fp);
+    printArray2dInt("ISLAND_ITREEADR", 1, d->nisland, d->island_itreeadr, fp);
+    printArray2dInt("MAP_ITREE2TREE", 1, m->ntree, d->map_itree2tree, fp);
+
     fprintf(fp, NAME_FORMAT, "DOF_ISLAND");
     for (int i = 0; i < m->nv; i++) {
       fprintf(fp, " %d", d->dof_island[i]);

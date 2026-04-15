@@ -26,6 +26,9 @@
 extern "C" {
 #endif
 
+// IMPORTANT: This API should still be considered experimental and is likely
+// change frequently.
+
 typedef enum mjtGraphicsApi_ {  // backend graphics API to use
   mjGFX_DEFAULT        = 0,     // default based on platform
   mjGFX_OPENGL,                 // OpenGL (desktop)
@@ -33,50 +36,51 @@ typedef enum mjtGraphicsApi_ {  // backend graphics API to use
 } mjtGraphicsApi;
 
 struct mjrFilamentConfig {
-  // "Loads" an asset, returning its contents in `out` and size in `out_size`.
-  // Returns 0 on success and non-zero to indicate an error. The caller must
-  // free `out`.
-  typedef int (*load_asset_fn)(const char* path, void* user_data,
-                              unsigned char** out, uint64_t* out_size);
-
-  // Used to load filament assets (e.g. materials, image-based lights, etc.).
-  load_asset_fn load_asset;
-  void* load_asset_user_data;
-
   // The native window handle into which we can render directly.
   void* native_window;
+
+  // The initial width and height of the offscreen framebuffer.
+  int width;
+  int height;
 
   // The backend graphics API to use.
   int graphics_api;
 
-  // Whether or not to enable GUI rendering.
-  bool enable_gui;
+  // Use software rendering even if the platform supports hardware rendering.
+  bool force_software_rendering;
 };
 
-void mjr_defaultFilamentConfig(mjrFilamentConfig* config);
+void mjrf_defaultFilamentConfig(mjrFilamentConfig* config);
 
-void mjr_makeFilamentContext(const mjModel* m, mjrContext* con,
-                             const mjrFilamentConfig* config);
+void mjrf_makeFilamentContext(const mjModel* m, mjrContext* con,
+                              const mjrFilamentConfig* config);
 
-void mjr_defaultContext(mjrContext* con);
+void mjrf_defaultContext(mjrContext* con);
 
-void mjr_makeContext(const mjModel* m, mjrContext* con, int fontscale);
+void mjrf_makeContext(const mjModel* m, mjrContext* con, int fontscale);
 
-void mjr_freeContext(mjrContext* con);
+void mjrf_freeContext(mjrContext* con);
 
-void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con);
+void mjrf_render(mjrRect viewport, mjvScene* scn, const mjrContext* con);
 
-void mjr_uploadMesh(const mjModel* m, const mjrContext* con, int meshid);
+void mjrf_uploadMesh(const mjModel* m, const mjrContext* con, int meshid);
 
-void mjr_uploadTexture(const mjModel* m, const mjrContext* con, int texid);
+void mjrf_uploadTexture(const mjModel* m, const mjrContext* con, int texid);
 
-void mjr_uploadFont(unsigned char* pixels, int width, int height, int bpp,
-                    int id, const mjrContext* con);
+void mjrf_uploadHField(const mjModel* m, const mjrContext* con, int hfieldid);
 
-void mjr_setBuffer(int framebuffer, mjrContext* con);
+void mjrf_setBuffer(int framebuffer, mjrContext* con);
 
-void mjr_readPixels(unsigned char* rgb, float* depth, mjrRect viewport,
-                    const mjrContext* con);
+void mjrf_readPixels(unsigned char* rgb, float* depth, mjrRect viewport,
+                     const mjrContext* con);
+
+double mjrf_getFrameRate(const mjrContext* con);
+
+uintptr_t mjrf_uploadGuiImage(uintptr_t tex_id, const unsigned char* pixels,
+                              int width, int height, int bpp,
+                              const mjrContext* con);
+
+void mjrf_updateGui(const mjrContext* con);
 
 #if defined(__cplusplus)
 }  // extern "C"

@@ -1,14 +1,8 @@
 Model Editing
 -------------
 
-.. admonition:: New API
-   :class: note
-
-   The API described below is new but feature complete. It is recommended for general use, but latent bugs are still
-   possible. Please report any issues on GitHub.
-
-As of MuJoCo 3.2.0, it is possible to create and modify models using the :ref:`mjSpec` struct and related API.
-This datastructure is in one-to-one correspondence with MJCF and indeed, MuJoCo's own XML parsers (both MJCF and URDF)
+It is possible to create and modify models using the :ref:`mjSpec` struct and related API.
+This data structure is in one-to-one correspondence with MJCF and indeed, MuJoCo's own XML parsers (both MJCF and URDF)
 use this API when loading a model.
 
 
@@ -17,19 +11,19 @@ use this API when loading a model.
 Overview
 ~~~~~~~~
 
-The new API augments the traditional workflow of creating and editing models using XML files, breaking up the *parse* and
+The API augments the traditional workflow of creating and editing models using XML files, breaking up the *parse* and
 *compile* steps. As summarized in the :ref:`Overview chapter<Instance>`, the traditional workflow is:
 
  1. Create an XML model description file (MJCF or URDF) and associated assets. |br|
- 2. Call :ref:`mj_loadXML`, obtain an mjModel instance.
+ 2. Call :ref:`mj_loadXML`, obtain an :ref:`mjModel` instance.
 
-The new workflow using :ref:`mjSpec` is:
+The workflow using :ref:`mjSpec` is:
 
- 1. :ref:`Create<mj_makeSpec>` an empty mjSpec or :ref:`parse<mj_parseXML>` an existing XML file.
- 2. Programmatically edit the mjSpec datastructure by adding, modifying and removing elements.
- 3. :ref:`Compile<mj_compile>` the mjSpec to an mjModel instance.
+ 1. Create an empty :ref:`mjSpec` using :ref:`mj_makeSpec` or parse an existing XML file using :ref:`mj_parseXML`.
+ 2. Programmatically edit the :ref:`mjSpec` data structure by adding, modifying, and removing elements.
+ 3. Compile the :ref:`mjSpec` to an :ref:`mjModel` instance using :ref:`mj_compile`.
 
- After compilation, the mjSpec remains editable, so steps 2 and 3 are interchangeable.
+ After compilation, the :ref:`mjSpec` remains editable, so steps 2 and 3 are interchangeable.
 
 
 .. _meUsage:
@@ -40,9 +34,9 @@ Usage
 Here we describe the C API for procedural model editing, but it is also exposed in the :ref:`Python
 bindings<PyModelEdit>`. Advanced users can refer to `user_api_test.cc
 <https://github.com/google-deepmind/mujoco/blob/main/test/user/user_api_test.cc>`__ and the MJCF parser in
-`xml_native_reader.cc <https://github.com/google-deepmind/mujoco/blob/main/src/xml/xml_native_reader.cc>`__ for more
-usage examples. After creating a new :ref:`mjSpec` or parsing an existing XML file to an :ref:`mjSpec`, procedural
-editing corresponds to setting attributes. For example, in order to change the timestep, one can do:
+`xml_native_reader.cc <https://github.com/google-deepmind/mujoco/blob/main/src/xml/xml_native_reader.cc>`__ for
+more usage examples. After creating a new :ref:`mjSpec` or parsing an existing XML file to an :ref:`mjSpec`,
+procedural editing corresponds to setting attributes. For example, in order to change the timestep, one can do:
 
 .. code-block:: C
 
@@ -56,7 +50,7 @@ In C one uses the provided :ref:`getters<AttributeGetters>` and :ref:`setters<At
 
 .. code-block:: C
 
-   mjs_setString(model->modelname, "my_model");
+   mjs_setString(spec->modelname, "my_model");
 
 In C++, one can use vectors and strings directly:
 
@@ -76,7 +70,7 @@ Loading a spec from XML can be done as follows:
 
 Model elements
 ^^^^^^^^^^^^^^
-Model elements corresponding to MJCF are exposed to the user as C structs with the ``mjs`` prefix, the definitions are
+Model elements corresponding to MJCF are exposed to the user as C structs with the ``mjs`` prefix. The definitions are
 listed under the :ref:`Model Editing<tySpecStructure>` section of the struct reference. For example, an MJCF
 :ref:`geom<body-geom>` corresponds to an :ref:`mjsGeom`.
 
@@ -120,13 +114,13 @@ Attachment
 ^^^^^^^^^^
 
 This framework introduces a powerful new feature: attaching and deleting model subtrees. This feature is already used to
-power the :ref:`attach<body-attach>` an :ref:`replicate<replicate>` meta-elements in MJCF. Attachment allows the user to
+power the :ref:`attach<body-attach>` and :ref:`replicate<replicate>` meta-elements in MJCF. Attachment allows the user to
 move or copy a subtree from one model into another, while also copying or moving related referenced assets and
 referencing elements from outside the kinematic tree (e.g., actuators and sensors). Similarly, deleting a subtree will
 remove all associated elements from the model. The default behavior ("shallow copy") is to move the child into the
 parent while attaching, so subsequent changes to the child will also change the parent. Alternatively, the user can
 choose to make an entirely new copy during attach using :ref:`mjs_setDeepCopy`. This flag is temporarily set to true
-while parsing XMLs. It is possible to :ref:`attach a body to a frame<mjs_attach>`:
+while parsing XMLs. It is possible to :ref:`attach a body or an mjSpec to a frame<mjs_attach>`:
 
 .. code-block:: C
 
@@ -138,7 +132,7 @@ while parsing XMLs. It is possible to :ref:`attach a body to a frame<mjs_attach>
    mjsElement* body = mjs_addBody(mjs_findBody(child, "world"), NULL)->element;
    mjsBody* attached_body_1 = mjs_asBody(mjs_attach(frame, body, "attached-", "-1"));
 
-or :ref:`attach a body to a site<mjs_attach>`:
+or :ref:`attach a body or an mjSpec to a site<mjs_attach>`:
 
 .. code-block:: C
 
@@ -148,7 +142,7 @@ or :ref:`attach a body to a site<mjs_attach>`:
    mjsElement* body = mjs_addBody(mjs_findBody(child, "world"), NULL)->element;
    mjsBody* attached_body_2 = mjs_asBody(mjs_attach(site, body, "attached-", "-2"));
 
-or :ref:`attach a frame to a body<mjs_attach>`:
+or :ref:`attach a frame or an mjSpec to a body<mjs_attach>`:
 
 .. code-block:: C
 
@@ -160,10 +154,22 @@ or :ref:`attach a frame to a body<mjs_attach>`:
 
 Note that in the above examples, the parent and child models have different values for ``compiler.degree``,
 corresponding to the :ref:`compiler/angle<compiler-angle>` attribute, specifying the units in which angles are
-interperted. Compiler flags are carried over during attachment, so the child model will be compiled using the child
+interpreted. Compiler flags are carried over during attachment, so the child model will be compiled using the child
 flags, while the parent will be compiled using the parent flags.
 
 Note also that once a child is attached by reference to a parent, the child cannot be compiled on its own.
+
+.. admonition:: Known issues
+   :class: note
+
+   The following known limitations exist:
+
+   - All assets from the child model will be copied in, whether they are referenced or not, if the parent and the child
+     are not the same mjSpec.
+   - Circular references are not checked for and will lead to infinite loops.
+   - When attaching a model with :ref:`keyframes<keyframe>`, model compilation is required for the re-indexing to be
+     finalized. If a second attachment is performed without compilation, the keyframes from the first attachment will be
+     lost.
 
 .. _meDefault:
 
@@ -187,7 +193,7 @@ already initialized elements.
 .. admonition:: Possible future change
    :class: note
 
-   The behaviour described above, where defaults are only applied at initialization, is a remnant of the old, XML-only
+   The behavior described above, where defaults are only applied at initialization, is a remnant of the old, XML-only
    loading pipeline. A future API change could allow defaults to be changed and applied after initialization. If you
    think this feature is important to you, please let us know on GitHub.
 

@@ -23,6 +23,7 @@
 #include "engine/engine_collision_driver.h"
 #include "engine/engine_core_constraint.h"
 #include "engine/engine_core_smooth.h"
+#include "engine/engine_core_util.h"
 #include "engine/engine_derivative.h"
 #include "engine/engine_memory.h"
 #include "engine/engine_macro.h"
@@ -38,6 +39,9 @@
 void mj_invPosition(const mjModel* m, mjData* d) {
   TM_START1;
   TM_START;
+
+  // clear flag for lazy evaluation
+  d->flg_energypos = 0;
 
   mj_kinematics(m, d);
   mj_comPos(m, d);
@@ -89,7 +93,9 @@ static void mj_discreteAcc(const mjModel* m, mjData* d) {
     dof_damping = 0;
     if (!mjDISABLED(mjDSBL_EULERDAMP)) {
       for (int i=0; i < nv; i++) {
-        if (m->dof_damping[i] > 0) {
+        if (m->dof_damping[i] > 0 ||
+            !mju_isZero(m->dof_dampingpoly + mjNPOLY*i, mjNPOLY) ||
+            m->jnt_actuatorid[m->dof_jntid[i]] != -1) {
           dof_damping = 1;
           break;
         }
@@ -105,7 +111,13 @@ static void mj_discreteAcc(const mjModel* m, mjData* d) {
     // set qfrc = (M + h*diag(B)) * qacc
     mj_mulM(m, d, qfrc, qacc);
     for (int i=0; i < nv; i++) {
-      qfrc[i] += m->opt.timestep * m->dof_damping[i] * d->qacc[i];
+      mjtNum v = d->qvel[i];
+      mjtNum poly[mjNPOLY];
+      mju_copy(poly, m->dof_dampingpoly + mjNPOLY*i, mjNPOLY);
+      mjtNum damping = m->dof_damping[i]
+                       + mj_actuatorDamping(m, mjOBJ_JOINT, m->dof_jntid[i], poly);
+      mjtNum damp_deriv = mjd_xPolyForce(damping, poly, v, mjNPOLY, 1);
+      qfrc[i] += m->opt.timestep * damp_deriv * d->qacc[i];
     }
     break;
 
@@ -191,7 +203,7 @@ void mj_inverseSkip(const mjModel* m, mjData* d,
     if (!skipsensor) {
       mj_sensorPos(m, d);
     }
-    if (mjENABLED(mjENBL_ENERGY)) {
+    if (mjENABLED(mjENBL_ENERGY) && !d->flg_energypos) {
       mj_energyPos(m, d);
     }
   }
@@ -202,7 +214,7 @@ void mj_inverseSkip(const mjModel* m, mjData* d,
     if (!skipsensor) {
       mj_sensorVel(m, d);
     }
-    if (mjENABLED(mjENBL_ENERGY)) {
+    if (mjENABLED(mjENBL_ENERGY) && !d->flg_energyvel) {
       mj_energyVel(m, d);
     }
   }
@@ -224,6 +236,7 @@ void mj_inverseSkip(const mjModel* m, mjData* d,
   mj_tendonBias(m, d, d->qfrc_inverse);
 
   if (!skipsensor) {
+    d->flg_rnepost = 0;  // clear flag for lazy evaluation
     mj_sensorAcc(m, d);
   }
 
