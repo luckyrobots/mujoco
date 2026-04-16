@@ -46,6 +46,8 @@ project "mujoco"
 		-- Plugins (first-party)
 		"plugin/sdf/*.h",
 		"plugin/sdf/*.cc",
+		"plugin/stl_decoder/stl_decoder.cc",
+		"plugin/obj_decoder/obj_decoder.cc",
 
 		-- Dependencies (compiled here for now)
 		"src/vendor/ccd/src/*.h",

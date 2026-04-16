@@ -37,49 +37,6 @@
 #include <pxr/usd/usd/stage.h>
 #endif
 
-//---------------------------------- Globals -------------------------------------------------------
-
-namespace {
-
-// global user model class
-class GlobalModel {
- public:
-  // deletes current model and takes ownership of model
-  void Set(mjSpec* spec = nullptr);
-
-  // writes XML to string
-  std::optional<std::string> ToXML(const mjModel* m, char* error,
-                                      int error_sz);
-
- private:
-  // using raw pointers as GlobalModel needs to be trivially destructible
-  std::mutex* mutex_ = new std::mutex();
-  mjSpec* spec_ = nullptr;
-};
-
-std::optional<std::string> GlobalModel::ToXML(const mjModel* m, char* error,
-                                              int error_sz) {
-  std::lock_guard<std::mutex> lock(*mutex_);
-  if (!spec_) {
-    mjCopyError(error, "No XML model loaded", error_sz);
-    return std::nullopt;
-  }
-  std::string result = WriteXML(m, spec_, error, error_sz);
-  if (result.empty()) {
-    return std::nullopt;
-  }
-  return result;
-}
-
-void GlobalModel::Set(mjSpec* spec) {
-  std::lock_guard<std::mutex> lock(*mutex_);
-  if (spec_ != nullptr) {
-    mj_deleteSpec(spec_);
-  }
-  spec_ = spec;
-}
-
-
 //---------------------------------- Functions -----------------------------------------------------
 
 // parse XML file in MJCF or URDF format, compile it, return low-level model
@@ -155,7 +112,7 @@ mjModel* mj_loadXMLWithPrefix(const char* filename, const mjVFS* vfs,
   }
 
   // clear old and assign new
-  GetGlobalModel().Set(spec.release());
+  SetGlobalXmlSpec(spec.release());
   return m;
 }
 
@@ -185,7 +142,7 @@ mjModel* mj_loadUSD(const char* filename, const mjVFS* vfs, char* error, int err
     return nullptr;
   }
 
-  GetGlobalModel().Set(spec.release());
+  SetGlobalXmlSpec(spec.release());
   return m;
 }
 #endif
