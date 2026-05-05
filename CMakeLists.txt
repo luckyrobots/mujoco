@@ -97,7 +97,9 @@ else()
   set(MUJOCO_RESOURCE_FILES "")
 endif()
 
-add_library(mujoco SHARED ${MUJOCO_RESOURCE_FILES})
+# Emscripten does not support SHARED libs
+add_library(mujoco STATIC ${MUJOCO_RESOURCE_FILES})
+
 target_include_directories(
   mujoco
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -213,52 +215,4 @@ if(BUILD_TESTING AND MUJOCO_BUILD_TESTS)
   if(MUJOCO_TEST_PYTHON_UTIL)
     add_subdirectory(python/mujoco/util)
   endif()
-endif()
-
-if(NOT (APPLE AND MUJOCO_BUILD_MACOS_FRAMEWORKS))
-  # Install the libraries.
-  install(
-    TARGETS mujoco
-    EXPORT ${PROJECT_NAME}
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT runtime
-    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT runtime
-    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT dev
-    PUBLIC_HEADER DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/mujoco" COMPONENT dev
-  )
-
-  set(CONFIG_PACKAGE_LOCATION "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}")
-
-  # Generate and install the mujocoTargets.cmake file. This defines the targets as
-  # IMPORTED libraries for downstream users.
-  install(
-    EXPORT ${PROJECT_NAME}
-    DESTINATION ${CONFIG_PACKAGE_LOCATION}
-    NAMESPACE mujoco::
-    FILE "${PROJECT_NAME}Targets.cmake"
-  )
-
-  include(CMakePackageConfigHelpers)
-
-  write_basic_package_version_file(
-    "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake"
-    VERSION ${mujoco_VERSION}
-    COMPATIBILITY AnyNewerVersion
-  )
-
-  configure_package_config_file(
-    cmake/${PROJECT_NAME}Config.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake"
-    INSTALL_DESTINATION ${CONFIG_PACKAGE_LOCATION}
-  )
-
-  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}Config.cmake"
-                "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_NAME}ConfigVersion.cmake"
-          DESTINATION ${CONFIG_PACKAGE_LOCATION}
-  )
-
-  # Install also models into share folder.
-  install(
-    DIRECTORY model
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/mujoco"
-    PATTERN "CMakeLists.txt" EXCLUDE
-  )
 endif()

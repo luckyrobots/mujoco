@@ -416,7 +416,7 @@ static bool validateFloatFormat(const char* float_format) {
   const char flag_characters[] = "-+ #0";
   int flag_character_counts[sizeof(flag_characters)] = { 0 };
   char* c;
-  while (c = strchr(flag_characters, float_format[cur_idx]), c != NULL) {
+  while (c = (char*) strchr(flag_characters, float_format[cur_idx]), c != NULL) {
     int flag_idx = (c - flag_characters)/sizeof(char);
     flag_character_counts[flag_idx]++;
     if (flag_character_counts[flag_idx] > 1) {

@@ -19,7 +19,9 @@ set(MUJOCO_SDF_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/../..
 set(MUJOCO_SDF_SRCS
     sdf.cc
     sdf.h
-    bolt.cc
+  	bolt.cc
+	  bottle.cc
+  	bottlecap.cc
     bolt.h
     bowl.cc
     bowl.h
@@ -32,7 +34,7 @@ set(MUJOCO_SDF_SRCS
     torus.h
 )
 
-add_library(sdf_plugin SHARED)
+add_library(sdf_plugin STATIC)
 target_sources(sdf_plugin PRIVATE ${MUJOCO_SDF_SRCS})
 target_include_directories(sdf_plugin PRIVATE ${MUJOCO_SDF_INCLUDE})
 target_link_libraries(sdf_plugin PRIVATE mujoco)
