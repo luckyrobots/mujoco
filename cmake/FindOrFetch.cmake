@@ -162,33 +162,5 @@ macro(FindOrFetch)
       endif()
     else()
       message(CHECK_PASS "found")
-    else()
-      message(CHECK_START
-              "mujoco::FindOrFetch: Using FetchContent to retrieve `${_ARGS_LIBRARY_NAME}`"
-      )
-      FetchContent_Declare(
-        ${_ARGS_LIBRARY_NAME}
-        GIT_REPOSITORY ${_ARGS_GIT_REPO}
-        GIT_TAG ${_ARGS_GIT_TAG}
-        GIT_SHALLOW FALSE
-        PATCH_COMMAND ${_ARGS_PATCH_COMMAND}
-        UPDATE_DISCONNECTED TRUE
-      )
-      if(${_ARGS_EXCLUDE_FROM_ALL})
-        FetchContent_GetProperties(${_ARGS_LIBRARY_NAME})
-        if(NOT ${${_ARGS_LIBRARY_NAME}_POPULATED})
-          FetchContent_Populate(${_ARGS_LIBRARY_NAME})
-          add_subdirectory(
-            ${${_ARGS_LIBRARY_NAME}_SOURCE_DIR} ${${_ARGS_LIBRARY_NAME}_BINARY_DIR}
-            EXCLUDE_FROM_ALL
-          )
-        endif()
-      else()
-        FetchContent_MakeAvailable(${_ARGS_LIBRARY_NAME})
-      endif()
-      message(CHECK_PASS "Done")
-    endif()
-  else()
-    message(CHECK_PASS "found")
-  endif()
+	endif()
 endmacro()

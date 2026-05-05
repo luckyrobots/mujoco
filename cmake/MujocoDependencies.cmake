@@ -62,7 +62,7 @@ set(MUJOCO_DEP_VERSION_benchmark
 )
 
 set(MUJOCO_DEP_VERSION_TriangleMeshDistance
-    2cb643de1436e1ba8e2be49b07ec5491ac604457
+	87558c88723586e4de1817a181480962d020062c
     CACHE STRING "Version of `TriangleMeshDistance` to be fetched."
 )
 
@@ -205,7 +205,7 @@ if(NOT TARGET trianglemeshdistance)
 
   FetchContent_GetProperties(trianglemeshdistance)
   if(NOT trianglemeshdistance_POPULATED)
-    FetchContent_Populate(trianglemeshdistance)
+	FetchContent_MakeAvailable(trianglemeshdistance)
     # Patch the source code to silence a warning/error related to a loop variable creating a copy.
     # Since this is a header only library this fix is less intrusive than disabling the warning for
     # any target including the header.
