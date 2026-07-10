@@ -124,8 +124,11 @@ endif()
 
 set(QHULL_ENABLE_TESTING OFF)
 # Patch changes in https://github.com/qhull/qhull/pull/173.patch
+# Reset the source first so re-applying on reconfigure is idempotent (the patch step re-runs
+# under UPDATE_DISCONNECTED; a plain re-apply fails on the already-patched tree).
 set(QHULL_PATCH_COMMAND
-  git apply --reject --whitespace=fix ${mujoco_SOURCE_DIR}/cmake/qhull-support-emscripten.patch
+  git checkout -- .
+  COMMAND git apply --reject --whitespace=fix ${mujoco_SOURCE_DIR}/cmake/qhull-support-emscripten.patch
 )
 
 findorfetch(
@@ -200,8 +203,10 @@ set(ENABLE_DOUBLE_PRECISION ON)
 set(CCD_HIDE_ALL_SYMBOLS ON)
 
 # Patch changes in https://github.com/danfis/libccd/pull/83.patch
+# Reset the source first so re-applying on reconfigure is idempotent (see qhull note above).
 set(CCD_PATCH_COMMAND
-  git apply --reject --whitespace=fix ${mujoco_SOURCE_DIR}/cmake/ccd-support-emscripten.patch
+  git checkout -- .
+  COMMAND git apply --reject --whitespace=fix ${mujoco_SOURCE_DIR}/cmake/ccd-support-emscripten.patch
 )
 
 # update cmake_minimum_required version for compatibility with newer version of cmake
