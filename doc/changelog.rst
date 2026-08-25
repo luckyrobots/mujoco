@@ -2,6 +2,27 @@
 Changelog
 =========
 
+Lucky Engine vendor backports (unreleased)
+-------------------------------------------
+
+General
+^^^^^^^
+
+- Replaced midpoint integration of free bodies with :ref:`gyroscopic derivatives<geFreeBody>` in the ``implicitfast``
+  :ref:`integrator<geIntegrators>`. The bias-force derivative of every standalone free body is applied through a local
+  unsymmetric solve of its decoupled block, making ``implicitfast`` identical to ``implicit`` for those bodies while
+  retaining ``implicitfast`` for articulated trees. Unlike midpoint integration, this applies under contacts, fluid,
+  and constraints and is compatible with discrete-time inverse dynamics. The
+  :ref:`invdiscrete<option-flag-invdiscrete>` flag no longer affects forward dynamics. Backported from upstream commit
+  `f0fa3d82 <https://github.com/google-deepmind/mujoco/commit/f0fa3d82604bc6f7080c61d6f37239f349b07a0e>`__.
+
+Bug fixes
+^^^^^^^^^
+
+- Fixed the analytic box-box collider's edge clipping so near-degenerate, nearly touching boxes cannot emit contacts
+  with spuriously large penetration depths. Backported from upstream commit
+  `8655446f <https://github.com/google-deepmind/mujoco/commit/8655446f25a483e056eb689a3ae3c57c4f9801f2>`__.
+
 Version 3.7.0 (April 14, 2026)
 ------------------------------
 
@@ -27,7 +48,7 @@ General
    (``jnt_stiffness``, ``dof_damping``, etc.) continue to hold the linear coefficient and are unchanged.
    The polynomial order is defined by the new constant :ref:`mjNPOLY<glNumericSizes>`. A future breaking C-API change
    may unify the linear and higher-order coefficients into a single array.
-4. Added :ref:`midpoint integration<geMidpoint>` for standalone free bodies in ``implicit`` and ``implicitfast``
+4. Added midpoint integration for standalone free bodies in ``implicit`` and ``implicitfast``
    :ref:`integrators<geIntegrators>`. This applies the implicit midpoint rule to the rotational dynamics of free bodies
    with no children, conserving kinetic energy to machine precision in the absence of external torques. The
    :ref:`invdiscrete<option-flag-invdiscrete>` flag now also disables midpoint integration, providing an opt-out

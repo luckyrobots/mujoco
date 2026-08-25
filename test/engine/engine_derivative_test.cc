@@ -150,6 +150,84 @@ TEST_F(DerivativeTest, SmoothDvel) {
   }
 }
 
+// mjd_freeBias_vel: 6x6 bias-derivative block for a standalone free body
+//   validated against mjd_rne_vel and against finite-differenced mj_rne
+TEST_F(DerivativeTest, FreeBiasVel) {
+  // free body with offset CoM, rotated inertia, non-identity orientation
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body pos="0.1 -0.2 0.3" euler="20 -30 40">
+        <freejoint/>
+        <geom type="box" size=".1 .2 .3" mass="2" pos=".04 -.02 .03" euler="10 20 30"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mjModel* m = model.get();
+  mjData* d = data.get();
+
+  // set fast, fully populated velocity
+  mjtNum qvel[6] = {0.4, -0.3, 0.2, 5, -3, 2};
+  mju_copy(d->qvel, qvel, 6);
+  mj_forward(m, d);
+
+  // analytic block
+  mjtNum B[36];
+  mjd_freeBias_vel(m, d, /*jnt=*/0, B);
+
+  // linear columns are zero by construction
+  for (int r = 0; r < 6; r++) {
+    for (int c = 0; c < 3; c++) {
+      EXPECT_EQ(B[6 * r + c], 0);
+    }
+  }
+
+  // compare with mjd_rne_vel: B == -(qDeriv(flg_bias=1) - qDeriv(flg_bias=0))
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m, d, /*flg_bias=*/1);
+  vector<mjtNum> qDeriv_bias = AsVector(d->qDeriv, m->nD);
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m, d, /*flg_bias=*/0);
+  for (int r = 0; r < 6; r++) {
+    int rowadr = m->D_rowadr[r];
+    ASSERT_EQ(m->D_rownnz[r], 6);
+    for (int k = 0; k < 6; k++) {
+      int c = m->D_colind[rowadr + k];
+      mjtNum rne_val = -(qDeriv_bias[rowadr + k] - d->qDeriv[rowadr + k]);
+      EXPECT_NEAR(B[6 * r + c], rne_val, MjTol(1e-14, 1e-6))
+          << "mismatch at (" << r << ", " << c << ")";
+    }
+  }
+
+  // compare with central finite differences of mj_rne
+  mjtNum eps = MjTol(1e-6, 1e-3);
+  for (int c = 0; c < 6; c++) {
+    mjtNum bias_plus[6], bias_minus[6];
+
+    d->qvel[c] = qvel[c] + eps;
+    mj_comVel(m, d);
+    mj_rne(m, d, /*flg_acc=*/0, bias_plus);
+
+    d->qvel[c] = qvel[c] - eps;
+    mj_comVel(m, d);
+    mj_rne(m, d, /*flg_acc=*/0, bias_minus);
+
+    d->qvel[c] = qvel[c];
+
+    for (int r = 0; r < 6; r++) {
+      mjtNum fd = (bias_plus[r] - bias_minus[r]) / (2 * eps);
+      EXPECT_NEAR(B[6 * r + c], fd, MjTol(1e-7, 1e-2))
+          << "FD mismatch at (" << r << ", " << c << ")";
+    }
+  }
+}
+
 // disabled actuators do not contribute to d_qfrc_actuator/d_qvel
 TEST_F(DerivativeTest, DisabledActuators) {
   // model with only a position actuator
@@ -1733,80 +1811,6 @@ TEST_F(DerivativeTest, FlexInterpDerivativesDeformed) {
 
   mj_deleteData(data);
   mj_deleteModel(model);
-}
-
-TEST_F(DerivativeTest, MidpointFluidAccuracy) {
-  const std::string xml_path =
-      GetTestDataFilePath(kTumblingThinObjectEllipsoidPath);
-  char error[1024];
-  mjModel* m = mj_loadXML(xml_path.c_str(), nullptr, error, sizeof(error));
-  ASSERT_THAT(m, NotNull()) << error;
-
-  mjtNum dt_small = 1e-4;
-  mjtNum dt_large = m->opt.timestep;  // 2e-3, the default
-  mjtNum duration = 0.5;
-
-  mjData* d_ref = mj_makeData(m);
-  mjData* d_midpoint = mj_makeData(m);
-  mjData* d_nomidpoint = mj_makeData(m);
-
-  // give initial angular velocity for tumbling
-  mj_resetData(m, d_ref);
-  mj_resetData(m, d_midpoint);
-  mj_resetData(m, d_nomidpoint);
-  d_ref->qvel[3] = 5;
-  d_ref->qvel[4] = 3;
-  d_ref->qvel[5] = 1;
-  d_midpoint->qvel[3] = 5;
-  d_midpoint->qvel[4] = 3;
-  d_midpoint->qvel[5] = 1;
-  d_nomidpoint->qvel[3] = 5;
-  d_nomidpoint->qvel[4] = 3;
-  d_nomidpoint->qvel[5] = 1;
-
-  int nsteps_large = static_cast<int>(duration / dt_large);
-  int substeps = static_cast<int>(dt_large / dt_small);
-
-  mjtNum error_midpoint = 0;
-  mjtNum error_nomidpoint = 0;
-
-  for (int i = 0; i < nsteps_large; i++) {
-    // reference: RK4 at small timestep
-    m->opt.integrator = mjINT_RK4;
-    m->opt.timestep = dt_small;
-    m->opt.enableflags &= ~mjENBL_INVDISCRETE;
-    for (int j = 0; j < substeps; j++) {
-      mj_step(m, d_ref);
-    }
-
-    // implicit with midpoint (default)
-    m->opt.integrator = mjINT_IMPLICIT;
-    m->opt.timestep = dt_large;
-    m->opt.enableflags &= ~mjENBL_INVDISCRETE;
-    mj_step(m, d_midpoint);
-
-    // implicit without midpoint
-    m->opt.enableflags |= mjENBL_INVDISCRETE;
-    mj_step(m, d_nomidpoint);
-
-    // accumulate position errors
-    for (int k = 0; k < 7; k++) {
-      mjtNum diff_mid = d_ref->qpos[k] - d_midpoint->qpos[k];
-      mjtNum diff_nomid = d_ref->qpos[k] - d_nomidpoint->qpos[k];
-      error_midpoint += diff_mid * diff_mid;
-      error_nomidpoint += diff_nomid * diff_nomid;
-    }
-  }
-
-  // expect midpoint to be more accurate
-  EXPECT_LT(error_midpoint, error_nomidpoint)
-      << "implicit midpoint should be more accurate than implicit without "
-      << "midpoint for a free body with fluid forces";
-
-  mj_deleteData(d_nomidpoint);
-  mj_deleteData(d_midpoint);
-  mj_deleteData(d_ref);
-  mj_deleteModel(m);
 }
 
 }  // namespace

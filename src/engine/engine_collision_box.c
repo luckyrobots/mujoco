@@ -19,6 +19,17 @@
 #include "engine/engine_util_blas.h"
 #include "engine/engine_util_misc.h"
 
+// rounding slack for the edge-edge depth bound: relative, and absolute times the sum of
+// half-sizes; wide enough to cover rounding between two computations of the same overlap,
+// orders of magnitude below the box-scale depths of spurious clipping artifacts
+#ifdef mjUSESINGLE
+ #define mjDEPTHSLACKREL 1e-4f
+ #define mjDEPTHSLACKABS 1e-5f
+#else
+ #define mjDEPTHSLACKREL 1e-6
+ #define mjDEPTHSLACKABS 1e-12
+#endif
+
 // hard-clamp vector to range [-limit(i), +limit(i)]
 static void mju_clampVec(mjtNum* vec, const mjtNum* limit, int n)
 {
@@ -614,6 +625,7 @@ int _boxbox(const mjModel* M, const mjData* D, mjContact* con, int g1, int g2, m
          depth[mjMAXCONPAIR], pts[6][3], ppts2[4][2], pu[4][3], axi[3][3];
   mjtNum linesu[4][6], lines[4][6], clnorm[3], rnorm[3];
   mjtNum penetration, c1, c2, c3, a, b, c, d, lx, ly, hz, l, x, y, u, v, llx, lly, innorm, margin2;
+  mjtNum maxdepth;
 
   int i0, i1, i2;
   mjtNum f0, f1, f2;
@@ -1319,18 +1331,31 @@ edgeedge:
   mju_zero3(con[0].frame + 3);
 
 
-  for (i = 0; i < n; i++) {
-    con[i].dist = depth[i];
+  // no contact can be deeper than the support overlap along the separating axis: clipping
+  // against a grazing face can synthesize spurious points with arbitrarily large depth;
+  // the slack covers rounding error so the deepest legitimate point is never rejected
+  maxdepth = mju_max(0, penetration);
+  maxdepth += margin + mjDEPTHSLACKREL * maxdepth +
+              mjDEPTHSLACKABS * (size1[0] + size1[1] + size1[2] +
+                                 size2[0] + size2[1] + size2[2]);
+
+  for (i = 0, m = 0; i < n; i++) {
+    if (depth[i] < -maxdepth) {
+      continue;
+    }
+
+    con[m].dist = depth[i];
     points[i][2] += hz;
 
     mji_mulMatVec3(tmp2, r, points[i]);
 
-    mji_add3(con[i].pos, tmp2, pos1);
+    mji_add3(con[m].pos, tmp2, pos1);
 
-    mji_copy6(con[i].frame, con[0].frame);
+    mji_copy6(con[m].frame, con[0].frame);
+    m++;
   }
 
-  return n;
+  return m;
 
 #undef rotaxis
 #undef rotmatx
